@@ -1,0 +1,5 @@
+set_io -nowarn a        1
+set_io -nowarn b        2
+set_io -nowarn c        5
+set_io -nowarn d        7
+set_io -nowarn clk      6

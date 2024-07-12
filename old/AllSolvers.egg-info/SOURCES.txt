@@ -1,0 +1,6 @@
+AllSolvers.cpp
+BuildAllSolvers.py
+AllSolvers.egg-info/PKG-INFO
+AllSolvers.egg-info/SOURCES.txt
+AllSolvers.egg-info/dependency_links.txt
+AllSolvers.egg-info/top_level.txt
