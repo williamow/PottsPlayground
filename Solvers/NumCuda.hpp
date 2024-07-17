@@ -23,6 +23,28 @@ public:
 	npy_intp NpyTypeId;
 
     // ================================================================================= CONSTRUCTORS, DESTRUCTORS, ETC
+    __host__ __device__ NumCuda(NumCuda && source){ //needed with some compilers (gcc 9) but not others (gcc 11)
+        dd = source.dd;
+        hd = source.hd;
+
+        //only do reference counting on host side - device side will never fully "own" the array:
+        #ifndef __CUDA_ARCH__
+            // printf("Starting reference counting\n");
+            dd_refcount = source.dd_refcount;
+            if (dd_refcount != NULL) *dd_refcount += 1;
+            hd_refcount = source.hd_refcount;
+            if (hd_refcount != NULL) *hd_refcount += 1;
+            // printf("Done updating reference counts\n");
+        #endif
+        
+        //and regular copying for everything else:
+        for (int i = 0; i < 5; i++) dims[i] = source.dims[i];
+        ndims = source.ndims;
+        nBytes = source.nBytes;
+        nElements = source.nElements;
+        NpyTypeId = source.NpyTypeId;
+    }
+
     __host__ __device__ NumCuda(NumCuda & source){
         //custom copy constructor,
         //so that we can keep track of how many references there are to the data arrays,
@@ -42,8 +64,6 @@ public:
             // printf("Done updating reference counts\n");
         #endif
         
-        
-
         //and regular copying for everything else:
         for (int i = 0; i < 5; i++) dims[i] = source.dims[i];
         ndims = source.ndims;
@@ -299,6 +319,14 @@ public:
             return dd[indx1*dims[1]*dims[2] + indx2*dims[2] + indx3];
         #else
             return hd[indx1*dims[1]*dims[2] + indx2*dims[2] + indx3];
+        #endif
+    }
+
+    __host__ __device__ inline T& operator ()(int indx1, int indx2, int indx3, int indx4){
+        #ifdef __CUDA_ARCH__
+            return dd[indx1*dims[1]*dims[2]*dims[3] + indx2*dims[2]*dims[3] + indx3*dims[3] + indx4];
+        #else
+            return hd[indx1*dims[1]*dims[2]*dims[3] + indx2*dims[2]*dims[3] + indx3*dims[3] + indx4];
         #endif
     }
 

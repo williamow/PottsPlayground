@@ -53,6 +53,7 @@ private:
 	NumCuda<float> biases;
 public:
 	__host__ PottsJitAnnealable(PyObject* task, bool USE_GPU);
+	__host__ __device__ float EnergyOfState(int* state);
 	__host__ __device__ void BeginEpoch(int iter);
 	__host__ __device__ void FinishEpoch();
 	__host__ __device__ float GetActionDE(int action_num);
@@ -62,19 +63,18 @@ public:
 
 class PottsPrecomputeAnnealable: public Annealable{
 private:
-	NumCuda<int> kmap;
+	NumCuda<float> kmap;
 	NumCuda<int> qSizes;
 	NumCuda<int> qCumulative;
 	NumCuda<int> partitions;
 	NumCuda<int> partition_states;
-	NumCuda<float> kernels;
-	NumCuda<float> NHPP_potentials;
-	//for storing info between tic and toc action phases:
-	int action_partition;
-	int old_Mi;
-	int new_Mi; 
+	NumCuda<float> dense_kernels;
+	NumCuda<float> sparse_kernels;
+	NumCuda<double> NHPP_potentials;
+	NumCuda<float> biases;
 public:
 	__host__ PottsPrecomputeAnnealable(PyObject *task, int nReplicates, bool USE_GPU);
+	__host__ __device__ float EnergyOfState(int* state);
 	__host__ __device__ void BeginEpoch(int iter);
 	__host__ __device__ void FinishEpoch();
 	__host__ __device__ float GetActionDE(int action_num);

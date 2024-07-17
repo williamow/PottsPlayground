@@ -1,6 +1,7 @@
 Annealing.cu
 BuildAnnealing.py
 PottsJitAnnealable.cu
+PottsPrecomputeAnnealable.cu
 TspAnnealable.cu
 Annealing.egg-info/PKG-INFO
 Annealing.egg-info/SOURCES.txt

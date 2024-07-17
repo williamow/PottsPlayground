@@ -20,7 +20,8 @@ class GraphColoring(BaseTask.BaseTask):
 			conn_nodes = [e[1] for e in self.G.edges(node1)]
 			for node2 in conn_nodes:
 				j = self.Partitions2Nodes.index(node2)
-				self.AddKernel(lambda n: self.IdentityKernel(n), i, j)
+				if i != j: #graph may have self-loops. we want to ignore them
+					self.AddKernel(lambda n: self.IdentityKernel(n), i, j)
 
 		self.CompileKernels()
 

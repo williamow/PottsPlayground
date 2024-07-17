@@ -112,6 +112,9 @@ PyObject* Anneal(PyObject* self, PyObject* args, PyObject* kwargs) {
 
     if (!strcmp(backend_str, "PottsJit"))
         task_cpp = new PottsJitAnnealable(task, USE_GPU);
+
+    else if (!strcmp(backend_str, "PottsPrecompute"))
+        task_cpp = new PottsPrecomputeAnnealable(task, nReplicates, USE_GPU);
         
     else if (!strcmp(backend_str, "Tsp"))
         task_cpp = new TspAnnealable(task, USE_GPU);

@@ -14,6 +14,7 @@ import numpy
 import Annealing
 from matplotlib import pyplot as plt
 import time
+import pickle
 
 # print(ctx.timing_result)
 # for thing in dir(ctx.timing_result):
@@ -55,37 +56,62 @@ import time
 
 
 
-plt.figure()
+# plt.figure()
 for excl in [15]:
 	placer = Ice40PlacerTask.Ice40PlacerTask(ctx, exclusion_factor=excl)
 		# exit()
-	for temp in [9]:
-
-
-		PwlTemp = numpy.zeros([2, 3], dtype="float32")
-		PwlTemp[0,0] = temp
-		PwlTemp[0,1] = temp-3
-		PwlTemp[0,2] = 0.2
-		PwlTemp[1,0] = 0
-		PwlTemp[1,1] = 8e7
-		PwlTemp[1,2] = 1e8
-
+	for temp in [5]:
 		
-		placer.defaultPwlSchedule(niters=1e7, tmax=temp)
+		placer.defaultPwlSchedule(niters=1e5, tmax=10)
 		placer.e_th = -1e14
 		tstart = time.perf_counter()
-		results = Annealing.Anneal(vars(placer), PwlTemp, OptsPerThrd=100, TakeAllOptions=True, backend="PottsJit", substrate="GPU", nReplicates=16, nWorkers=64, nReports=20)
+		results = Annealing.Anneal(vars(placer), placer.PwlTemp, OptsPerThrd=10, TakeAllOptions=True, backend="PottsJit", substrate="CPU", nReplicates=4, nWorkers=1, nReports=1)
+		# results = Annealing.Anneal(vars(placer), PwlTemp, OptsPerThrd=1, TakeAllOptions=False, backend="PottsJit", substrate="CPU", nReplicates=1, nWorkers=1, nReports=10)
 		ttot = time.perf_counter() - tstart
 		print("Annealing time is %.2f seconds"%ttot)
-		final_best_soln = results['MinStates'][-1,:]
 
+		with open("res.pkl", 'wb') as f:
+			pickle.dump(results, f)
+		# for i in range(16):
+			# final_best_soln = results['AllMinStates'][-2, i, :]
+			# cost = placer.EvalSparseCost(final_best_soln)
+			# print(i, cost)
+		final_best_soln = results['AllStates'][-1,0,:]
+		# exit()
 # check_energies(placer, results, "NA")
 
 # plt.figure()
-		plt.plot(results['Iter'], results['AvgMinEnergies'], label="Ex: %i, T=%i"%(excl, temp))
+		# plt.plot(results['Iter'], results['AvgMinEnergies'], label="Ex: %i, T=%i"%(excl, temp))
 
 
-plt.legend()
-plt.show()
+# plt.legend()
+# plt.show()
+
+crit_path = [
+"$auto$simplemap.cc:420:simplemap_dff$7449_DFFLC",
+"$nextpnr_ICESTORM_LC_1",
+"$auto$alumacc.cc:474:replace_alu$4204.slice[1].carry$CARRY",
+"$auto$alumacc.cc:474:replace_alu$4204.slice[2].adder_LC",
+"$abc$13313$auto$blifparse.cc:492:parse_blif$13526_LC",
+"$abc$13313$auto$blifparse.cc:492:parse_blif$13522_LC",
+"$abc$13313$auto$blifparse.cc:492:parse_blif$13516_LC",
+"$auto$alumacc.cc:474:replace_alu$4213.slice[2].adder_LC",
+"$auto$alumacc.cc:474:replace_alu$4213.slice[3].adder_LC",
+"$auto$alumacc.cc:474:replace_alu$4213.slice[4].adder_LC",
+"$auto$alumacc.cc:474:replace_alu$4213.slice[5].adder_LC",
+"$abc$13313$auto$blifparse.cc:492:parse_blif$13688_LC",
+"$abc$13313$auto$blifparse.cc:492:parse_blif$13687_LC",
+"$abc$13313$auto$blifparse.cc:492:parse_blif$13686_LC",
+"$abc$13313$auto$blifparse.cc:492:parse_blif$13685_LC",
+"$abc$13313$auto$blifparse.cc:492:parse_blif$14012_LC",
+"$abc$13313$auto$blifparse.cc:492:parse_blif$14011_LC",
+"$abc$13313$auto$blifparse.cc:492:parse_blif$14131_LC",
+"ROM.rom.0.0.0_RAM"
+]
+
+# placer.examine_path(crit_path)
+
+# for u, v, data in placer.G.edges("$nextpnr_ICESTORM_LC_1", data=True):
+	# print(data)
 
 placer.SetResultInContext(ctx, final_best_soln, STRENGTH_FIXED)

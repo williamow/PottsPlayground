@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <random>
 #include <thread>
-#include <barrier>
 
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
@@ -26,20 +25,17 @@ template <typename Annealable> __global__  void AnnealingCoreGpu(
     //super important that this is declared volatile, so that it is always retreived from global memory, 
 ){
     int ThrdIndx = blockDim.x * blockIdx.x + threadIdx.x;
-    #define SYNC_REPLICATE() __syncthreads()
+
     curandState RngState;
     curand_init(ThrdIndx, MinIter, 0, &RngState); //use thread index number and starting iteration to seed the rng
     #define RngUniform() curand_uniform(&RngState)
     #define RngInteger() curand(&RngState)
 
-    // #include "functionBody.cpp"
     int nThrds = commspace.dims[1]; //threads per replicate
     int nReplicates = commspace.dims[0];
     int replicate_index = ThrdIndx/nThrds;
     int Thrd = ThrdIndx%nThrds; //thread index within each replicate
     if (replicate_index + 1 > nReplicates) return;
-
-    // Annealable* task = &taskIn;
 
     //create local references to the state vectors used in this particular thread:
     int *MiWrk = &working_states(replicate_index, 0);
@@ -53,7 +49,7 @@ template <typename Annealable> __global__  void AnnealingCoreGpu(
 
     for (int iter = MinIter; iter < MaxIter; iter+=iter_inc){
         if (*TaskDone > 0) break;
-        SYNC_REPLICATE();
+        __syncthreads();
         //each thread selects the best action within its subset:
         float T = PwlTemp.interp(iter);
 
@@ -79,7 +75,7 @@ template <typename Annealable> __global__  void AnnealingCoreGpu(
         //synchronize threads, so that all threads can see the action proposals from the other threads.
         //this may sync with other threads that are not working cooperatively, too;
         //while that might be undesirable for performance, it is functionally okay.
-        SYNC_REPLICATE();
+        __syncthreads();
 
         //all threads simultaneously decide which actions to take on their annealable object, although this is redundant.
         //They should all be doing exactly the same thing, if they are not, that would be bad.
@@ -89,9 +85,9 @@ template <typename Annealable> __global__  void AnnealingCoreGpu(
                 action = commspace(replicate_index, i, 1);
                 if (action >= 0)
                     task.TakeAction_tic(action);
-                SYNC_REPLICATE();
+                __syncthreads();
                 task.TakeAction_toc(action);
-                SYNC_REPLICATE();
+                __syncthreads();
             }
         } else {
             //finds the single best action from all threads, and takes that action.
@@ -103,20 +99,17 @@ template <typename Annealable> __global__  void AnnealingCoreGpu(
             }
             if (action >= 0)
                 task.TakeAction_tic(action);
-            SYNC_REPLICATE();
+            __syncthreads();
             task.TakeAction_toc(action);
         }
         if (task.lowest_e < e_th) *TaskDone = 1; 
     }
 
+    task.FinishEpoch();
     working_energies(replicate_index) = task.current_e;
     best_energies(replicate_index) = task.lowest_e;
-    task.FinishEpoch();
+    
 }
-
-// #undef RngUniform
-// #undef RngInteger
-// #undef SYNC_REPLICATE
 
 template <typename Annealable> __host__  void AnnealingCoreCpu(
     Annealable &&task,
@@ -127,30 +120,22 @@ template <typename Annealable> __host__  void AnnealingCoreCpu(
     NumCuda<float> &&commspace, //for communication between cooperating threads; use however seen fit.
     PieceWiseLinear &&PwlTemp, //for calculating the annealing temperature to use.
     int OptsPerThrd,
-    // bool TakeAllActions,
     int MinIter,
     int MaxIter,
     float e_th, //energy threshold to trigger premature termination
     int ThrdIndx,
-    // std::barrier<> *sync_point,
     volatile int *TaskDone //bit that tells all processes to exit, set by a single process upon finding a 'solution'.
     //super important that this is declared volatile, so that it is always retreived from global memory, 
 ){
 
-    // #define SYNC_REPLICATE() sync_point->arrive_and_wait()
     std::mt19937 RngGenerator(ThrdIndx + MinIter*1000);
     std::uniform_real_distribution<float> uniform_distribution(0.0,1.0);
-    // #define RngUniform() uniform_distribution(RngGenerator)
-    // #define RngInteger() RngGenerator()
 
-    // #include "functionBody.cpp"
     int nThrds = 1;//commspace.dims[1]; //threads per replicate
     int nReplicates = commspace.dims[0];
     int replicate_index = ThrdIndx;///nThrds;
     int Thrd = ThrdIndx%nThrds; //thread index within each replicate
     if (replicate_index + 1 > nReplicates) return;
-
-    // Annealable* task = &taskIn;
 
     //create local references to the state vectors used in this particular thread:
     int *MiWrk = &working_states(replicate_index, 0);
@@ -185,9 +170,9 @@ template <typename Annealable> __host__  void AnnealingCoreCpu(
         if (task.lowest_e < e_th) *TaskDone = 1; 
     }
 
+    task.FinishEpoch();
     working_energies(replicate_index) = task.current_e;
     best_energies(replicate_index) = task.lowest_e;
-    task.FinishEpoch();
 }
 
 
@@ -260,6 +245,10 @@ template <typename Annealable> void GpuDispatch(
 
 }
 
+template <typename T> void testfunc(NumCuda<int> &&garbage){
+    printf("%i\n", garbage.dims[0]);
+}
+
 template <typename Annealable> void CpuDispatch(
         void* void_task, //the task, which must be specified as a void pointer since it changes
         NumCuda<int> &WrkStates,
@@ -283,6 +272,8 @@ template <typename Annealable> void CpuDispatch(
     int nThreads = nWorkers*nReplicates;
 
     std::vector<std::thread> workers;
+
+    // std::thread t1(testfunc<int>, WrkStates);
 
     // std::barrier<> * b; 
     //tried using barriers to make CPU thread worker groups. 

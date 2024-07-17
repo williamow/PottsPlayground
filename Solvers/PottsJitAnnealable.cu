@@ -1,6 +1,5 @@
 #include "Annealables.h"
 
-
 //=====================================================================================constructor methods
 __host__ PottsJitAnnealable::PottsJitAnnealable(PyObject* task, bool USE_GPU){
 
@@ -20,6 +19,19 @@ __host__ PottsJitAnnealable::PottsJitAnnealable(PyObject* task, bool USE_GPU){
     else         dispatch = CpuDispatch<PottsJitAnnealable>;
 }
 
+__host__ __device__ float PottsJitAnnealable::EnergyOfState(int* state){
+	float e = 0;
+    for (int i = 0; i < nPartitions; i++){
+    	e += 2*biases(i, state[i]);
+    	for (int c = 1; c < kmap(i,0,0); c++){
+    		int j = kmap(i,c,2); //index of the connected Potts node
+    		float w = kmap(i,c,1); //scalar multiplier
+    		int k = kmap(i,c,0); //which kernel
+    		e += w*kernels(k, state[i], state[j]);
+    	}
+    }
+    return e/2;
+}
 
 __host__ __device__ void PottsJitAnnealable::BeginEpoch(int iter){
 
@@ -29,29 +41,17 @@ __host__ __device__ void PottsJitAnnealable::BeginEpoch(int iter){
             MiBest[partition] = MiWrk[partition];
         }
 	}
-
 	//intialize total energies to reflect the states that were just passed
-	current_e = 0;
-    lowest_e = 0;
-    for (int i = 0; i < nPartitions; i++){
-    	current_e += 2*biases(i, MiWrk[i]);
-    	lowest_e += 2*biases(i, MiBest[i]);
-
-    	for (int c = 1; c < kmap(i,0,0); c++){
-    		int j = kmap(i,c,2); //index of the connected Potts node
-    		float w = kmap(i,c,1); //scalar multiplier
-    		int k = kmap(i,c,0); //which kernel
-    		current_e += w*kernels(k, MiWrk[i], MiWrk[j]);
-    		lowest_e += w*kernels(k, MiBest[i], MiBest[j]);
-    	}
-
-    }
-    current_e = current_e / 2;
-    lowest_e = lowest_e / 2;
+	current_e = EnergyOfState(MiWrk);
+    lowest_e = EnergyOfState(MiBest);
 }
 
 
 __host__ __device__ void PottsJitAnnealable::FinishEpoch(){
+	// float eps = 1e-5;
+	// float e = EnergyOfState(MiWrk);
+	// if (current_e + eps < e || current_e - eps > e)
+		// printf("Working Energy tracking error: actual=%.5f, tracked=%.5f\n", e, current_e); 
 	
 }
 
