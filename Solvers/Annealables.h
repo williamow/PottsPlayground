@@ -61,7 +61,7 @@ public:
 	__host__ __device__ void TakeAction_toc(int action_num);
 };
 
-class PottsPrecomputeAnnealable: public Annealable{
+class PottsPrecomputeBase: public Annealable{
 private:
 	NumCuda<float> kmap;
 	NumCuda<int> qSizes;
@@ -73,13 +73,18 @@ private:
 	NumCuda<double> NHPP_potentials;
 	NumCuda<float> biases;
 public:
-	__host__ PottsPrecomputeAnnealable(PyObject *task, int nReplicates, bool USE_GPU);
+	__host__ PottsPrecomputeBase(PyObject *task, int nReplicates, bool USE_GPU);
 	__host__ __device__ float EnergyOfState(int* state);
 	__host__ __device__ void BeginEpoch(int iter);
 	__host__ __device__ void FinishEpoch();
 	__host__ __device__ float GetActionDE(int action_num);
 	__host__ __device__ void TakeAction_tic(int action_num);
 	__host__ __device__ void TakeAction_toc(int action_num);
+};
+
+class PottsPrecomputeAnnealable: public PottsPrecomputeBase{
+public:
+	__host__ PottsPrecomputeAnnealable(PyObject *task, int nReplicates, bool USE_GPU):PottsPrecomputeBase(task, nReplicates, USE_GPU) {}
 };
 
 class TspAnnealable: public Annealable {

@@ -42,8 +42,6 @@ def gather_metrics():
 	print("Testing %i cost architectures."%nArch)
 	arch_results = {}
 
-	r, w = os.pipe()
-
 	for arch in cost_architectures:
 		placer = Ice40PlacerTask.Ice40PlacerTask(ctx, arch)
 
@@ -53,9 +51,12 @@ def gather_metrics():
 		wirelen = []
 		route_time = []
 
-		def parent(pid, state):
+		def parent(pid, r):
 			#parent process waits for child to finish and collects data from the child
-			os.waitpid(pid, 0)
+			try:
+				os.waitpid(pid, 0)
+			except OSError:
+				pass
 			child_output = os.read(r, 1000000)
 			child_output = child_output.decode('utf-8')
 			if extract_float(child_output, pattern = r'nConflicts: (\d+)') > 0:
@@ -68,11 +69,12 @@ def gather_metrics():
 			timing_cost.append(extract_float(child_output, pattern = r'timing cost = (\d+)'))
 			wirelen.append(extract_float(child_output, pattern = r'wirelen = (\d+)'))
 
-			potts_cost.append(placer.EvalCost(state))
+			potts_cost.append(extract_float(child_output, pattern = r'Potts cost: (\d+\.\d+)'))
+			
 			print(fmax[-1], potts_cost[-1], route_time[-1], timing_cost[-1], wirelen[-1])
 
 
-		def child(final_best_soln):
+		def child(final_best_soln, w):
 			os.dup2(w, 1) #redirect child stderr and stdout to the pipe
 			os.dup2(w, 2)
 
@@ -92,6 +94,8 @@ def gather_metrics():
 
 			for key in ctx.timing_result.clock_fmax:
 				print("Achieved FMAX: %.2f"%ctx.timing_result.clock_fmax[key.first].achieved)
+
+			print("Potts cost: %.2f"%placer.EvalCost(state))
 			
 			exit()
 
@@ -102,14 +106,21 @@ def gather_metrics():
 			ttot = time.perf_counter() - tstart
 			print("Annealing time for %i iterations is %.2f seconds"%(niters, ttot))
 
+			#nReplicates children are forked off all at once before the parent waits for all the children to finish
+			r = [-1]*nReplicates
+			w = [-1]*nReplicates
+			pid = [-1]*nReplicates
+			for i in range(nReplicates):			
+				state = results["AllStates"][-1,i,:]
+				r[i], w[i] = os.pipe()
+				pid[i] = os.fork()
+				if pid[i] == 0:
+					child(state, w[i])
+				
 			for i in range(nReplicates):
-				for res_type in ["AllStates"]:#, "AllMinStates"]:
-					state = results[res_type][-1,i,:]
-					pid = os.fork()
-					if pid > 0:
-						parent(pid, state)
-					else:
-						child(state)
+				parent(pid[i], r[i])
+				os.close(r[i])
+				os.close(w[i])
 
 		arch_results[arch] = {
 			"potts_cost": potts_cost,
@@ -119,25 +130,36 @@ def gather_metrics():
 			"route_time": route_time
 		}
 
-	with open("results/PlacerCostArchData.pkl", 'wb') as f:
-		pickle.dump(arch_results, f)
+		#save the results after each new architecture has been tested:
+		with open("Results/PlacerCostArch/PlacerCostArchData.pkl", 'wb') as f:
+			pickle.dump(arch_results, f)
 
 
 def plot_grid():
-	#plot a grid of
-	fig, ax_list = plt.subplots(nArch, 4, figsize=(6.5, 1.5*nArch))
+	with open("Results/PlacerCostArch/PlacerCostArchData.pkl", 'rb') as f:
+		arch_results = pickle.load(f)
 
-	ax1.scatter(potts_cost, timing_cost)
-	ax1.set_title("timing cost")
-	ax2.scatter(potts_cost, fmax)
-	ax2.set_title("Fmax")
-	ax3.scatter(potts_cost, wirelen)
-	ax3.set_title("wirelen cost")
-	ax4.scatter(potts_cost, route_time)
-	ax4.set_title("routing time")
-	plt.tight_layout()
-	plt.show()
+	for i, arch_spec in enumerate(arch_results):
+		res = arch_results[arch_spec]
+		potts_cost = res["potts_cost"]
+		fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(5, 5))
+
+		ax1.scatter(potts_cost, res["timing_cost"])
+		ax1.set_title("timing cost")
+		ax2.scatter(potts_cost, res["fmax"])
+		ax2.set_title("Fmax")
+		ax3.scatter(potts_cost, res["wirelen"])
+		ax3.set_title("wirelen cost")
+		ax4.scatter(potts_cost, res["route_time"])
+		ax4.set_title("routing time")
+		plt.suptitle(repr(arch_spec))
+		plt.tight_layout()
+		plt.savefig("Results/PlacerCostArch/arch-%s.png"%repr(arch_spec))
+		plt.close()
 
 if __name__ == '__main__':
-	gather_metrics()
+	if "ctx" in locals():
+		gather_metrics()
+	else:
+		plot_grid()
 	exit()

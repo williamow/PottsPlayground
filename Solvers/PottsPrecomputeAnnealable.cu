@@ -7,7 +7,7 @@
 
 
 	//=====================================================================================constructor methods
-PottsPrecomputeAnnealable::PottsPrecomputeAnnealable(PyObject *task, int nReplicates, bool USE_GPU){
+PottsPrecomputeBase::PottsPrecomputeBase(PyObject *task, int nReplicates, bool USE_GPU){
 
 	qSizes = 			NumCuda<int>(task, "qSizes", 1, false, USE_GPU);
 	qCumulative = 		NumCuda<int>(task, "qCumulative", 1, false, USE_GPU);
@@ -48,7 +48,7 @@ PottsPrecomputeAnnealable::PottsPrecomputeAnnealable(PyObject *task, int nReplic
     else         dispatch = CpuDispatch<PottsPrecomputeAnnealable>;
 }
 
-__host__ __device__ float PottsPrecomputeAnnealable::EnergyOfState(int* state){
+__host__ __device__ float PottsPrecomputeBase::EnergyOfState(int* state){
 	float e = 0;
     for (int i = 0; i < nPartitions; i++){
     	e += 2*biases(i, state[i]);
@@ -65,7 +65,7 @@ __host__ __device__ float PottsPrecomputeAnnealable::EnergyOfState(int* state){
     return e/2;
 }
 
-__host__ __device__ void PottsPrecomputeAnnealable::BeginEpoch(int iter){
+__host__ __device__ void PottsPrecomputeBase::BeginEpoch(int iter){
 	// printf("mark 2\n");
 	if (iter==0){
 		for (int partition = 0; partition < nPartitions; partition++){
@@ -106,7 +106,7 @@ __host__ __device__ void PottsPrecomputeAnnealable::BeginEpoch(int iter){
     }
 }
 
-__host__ __device__ void PottsPrecomputeAnnealable::FinishEpoch(){
+__host__ __device__ void PottsPrecomputeBase::FinishEpoch(){
 	float eps = 1;
 	float e = EnergyOfState(MiWrk);
 	if (current_e + eps < e || current_e - eps > e)
@@ -115,7 +115,7 @@ __host__ __device__ void PottsPrecomputeAnnealable::FinishEpoch(){
 
 // ===================================================================================annealing methods
 //how much the total energy will change if this action is taken
-__host__ __device__ float PottsPrecomputeAnnealable::GetActionDE(int action_num){
+__host__ __device__ float PottsPrecomputeBase::GetActionDE(int action_num){
 	int action_partition = partitions(action_num);
 	int new_Mi = partition_states(action_num);
 	int old_Mi = MiWrk[action_partition];
@@ -126,13 +126,13 @@ __host__ __device__ float PottsPrecomputeAnnealable::GetActionDE(int action_num)
 } 
 
 //changes internal state to reflect the annealing step that was taken
-__host__ __device__ void PottsPrecomputeAnnealable::TakeAction_tic(int action_num){
+__host__ __device__ void PottsPrecomputeBase::TakeAction_tic(int action_num){
 	float dE = GetActionDE(action_num);
 	// printf("taking action %i with dE %.5f\n", action_num, dE);
 	current_e += dE;
 }
 
-__host__ __device__ void PottsPrecomputeAnnealable::TakeAction_toc(int action_num){
+__host__ __device__ void PottsPrecomputeBase::TakeAction_toc(int action_num){
 	if (action_num < 0) return;
 
 	int j = partitions(action_num);
