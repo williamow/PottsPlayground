@@ -5,6 +5,9 @@ from Tasks import BaseTask
 from Tasks import GraphColoringTask
 import Annealing
 import math
+import time
+import pickle
+import json
 
 def GetCellPortNetName(cell, name):
 	if cell.ports[name].net is not None:
@@ -59,10 +62,8 @@ def FollowArcs(ctx, G, cell_name, ArcsBefore=0, names_before=[]):
 		if data["d2u"] == False or data["src"] != cell_name:
 			continue
 
-		if 0: #"ArcsAfter" in data:
-			#this arc has already been followed.
-			if data["ArcsBefore"] < ArcsBefore:
-				data["ArcsBefore"] = ArcsBefore
+		if "ArcsAfter" in data and data["ArcsBefore"] >= ArcsBefore:
+			#this arc has already been followed, and we don't need to follow it again:
 			if data["ArcsAfter"] > MaxArcsAfter:
 				MaxArcsAfter = data["ArcsAfter"]
 		else:
@@ -91,9 +92,15 @@ def FollowArcs(ctx, G, cell_name, ArcsBefore=0, names_before=[]):
 
 class Ice40PlacerTask(BaseTask.BaseTask):
 
-	def __init__(self, ctx, exclusion_factor=10):
+	def __init__(self, ctx, cost_balancing=(15, 0.5, 1, 0), split_cells=True, verbose=False):
 		#======================================================construct friendlier formats of the design specifications
 		#get lists of bel types in the architecture:
+		exclusion_factor = cost_balancing[0]
+		w_wirelen = cost_balancing[1]
+		w_timing = cost_balancing[2]
+		w_jogs = cost_balancing[3]
+
+		self.e_th = -1e14
 		self.exclusion_factor = exclusion_factor
 		self.BelTypes = {}
 		self.GetBelType = {} #replicate ctx functionality, so that I can easily, temporarily keep track of articial bel type changes
@@ -144,14 +151,7 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 				chain = RecurseDownCarryChain(ctx, cell)
 				# print("Carry chain len =", len(chain))
 				chain = [cell.name for cell in chain]
-				#split chains into 8-cell max blocks, so that each chain in the SA algorithm only takes up one logic tile:
-				# while len(chain) > 8:
-				# 	new_chain = chain[:7]
-				# 	chain = chain[8:]
-				# 	# self.CellTypes['CC'].append(new_chain)
-				# 	self.chains[new_chain[0]] = new_chain
 				self.chains[chain[0]] = chain
-				# self.CellTypes['CC'].append(chain)
 				
 		#need to remove the chain cells from the list of logic cells.
 		self.CellTypes["CC"] = [] #CC, for carry chains
@@ -163,11 +163,10 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 			#Why? by having a name instead of a list, code machinery lower down will still work,
 			#and by using the name of the first cell, we can easily find the whole carry chain again later.
 			self.CellTypes['CC'].append(chain_start)
-			# self.chains[chain[0]] = chain #move actual chain to separate data structure
 			self.GetCellType[chain_start] = 'CC'
 			#in the edge connectivity graph, merge all of the chain cells into one:
 			for cell_name in chain[1:]:
-				#manually merge each cell into the root cell
+				#manually merge each cell into the root cell, so that the edge attributes can be correctly accounted for
 				for u, v, data in G.edges(cell_name, data=True):
 					if u != cell_name:
 						print("Guess that's not the right order")
@@ -181,28 +180,24 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 						G.add_edge(chain_start, v, **data)
 						# G[chain_start][v] = data
 				G.remove_node(cell_name)
-				# G = nx.contracted_nodes(G, chain_start, cell_name, False, False)
 
 		#build timing arc stuff into the graph:
 		for node in G:
 			FollowArcs(ctx, G, node)
 
 		self.G = G
-		# print(G["$nextpnr_ICESTORM_LC_0"]["$abc$13313$auto$blifparse.cc:492:parse_blif$13641_LC"])
-		# exit()
 
 		# next, the remaining logic cells need to be colored by what logic cell index (within each tile) they will be constrained to.
 		#this should significantly reduce the size of the problem, and speed up computation, without significantly limiting the minimum.
-
-		# self.SplitCellsBySlot(ctx)
+		if split_cells:
+			self.SplitCellsBySlot(ctx)
 		self.SplitBelsBySlot(ctx)
 		self.BelTypes['CC'] = self.BelTypes['LC0'] #artificial mapping, so code below can apply more uniformly
 			
 
-		for ty in self.CellTypes:
-			print(ty, len(self.CellTypes[ty]))
-			# print(ty, self.BelTypes[ty][:30])
-
+		if verbose:
+			for ty in self.CellTypes:
+				print(ty, len(self.CellTypes[ty]))
 		
 		#======================================================= partition construction
 		qSizes = []
@@ -293,10 +288,6 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 
 		
 		# ============================================================================= kernel map construction
-
-		self.InitKernelManager() #sets up for a host of BaseTask functions used for kernel management
-		self.kmap = numpy.zeros([nPartitions, nPartitions], dtype="int32")
-
 		narchist = numpy.zeros([25])
 		maxnarc = 1
 		for u, v, data in G.edges(data=True):
@@ -314,13 +305,26 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 			for j, cell2_name in enumerate(self.Partitions2CellNames):
 				if G.has_edge(cell1_name, cell2_name):
 					data = G[cell1_name][cell2_name]
-					w = data["w"]
-					total_weight_strength[i] = total_weight_strength[i] + 1/w
+					nEndpoints = data["w"]
+					total_weight_strength[i] = total_weight_strength[i] + w_wirelen/nEndpoints
 					d2u = data["d2u"]
 					if "ArcsAfter" in data and "ArcsBefore" in data:
 						narcs = data["ArcsAfter"]+data["ArcsBefore"]+1
-						total_weight_strength[i] = total_weight_strength[i] + 1.5**(narcs-maxnarc)
+						total_weight_strength[i] = total_weight_strength[i] + w_timing*2**(narcs-maxnarc)
+						total_weight_strength[i] = total_weight_strength[i] + w_jogs
+
 		# print(total_weight_strength)
+
+		lc_check_types = ["LC%i"%i for i in range(8)] + ["CC", "ICESTORM_LC"]
+
+		#set up ntiles variables, which tells if a cell occupies 1 or more than 1 logic tiles (if it is a carry chain)
+		ntiles = numpy.ones([nPartitions])
+		for i, cell_name in enumerate(self.Partitions2CellNames):
+			type1 = self.GetCellType[cell_name]
+			if type1 == "CC":
+				ntiles[i] = math.ceil(len(self.chains[cell_name])/8)
+
+		self.InitKernelManager() #sets up for a host of BaseTask functions used for kernel management
 
 		for i, cell1_name in enumerate(self.Partitions2CellNames):
 			for j, cell2_name in enumerate(self.Partitions2CellNames):
@@ -332,21 +336,15 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 
 				#two logic cells with different D flip flop configurations cannot share the same logic tile
 				tile_exclude = False
-				lc_check_types = ["LC%i"%i for i in range(8)] + ["CC", "ICESTORM_LC"]
+				
 				if type1 in lc_check_types and type2 in lc_check_types:
 					tile_exclude = DffIncompatible(cell1, cell2)
 
 				#if a cell is a carry chain, it may span across more than one tile,
 				#in which case we should have a multi-tile exclusion.
 				#we must also account for when two multi-length carry chains exclude each other.
-				ntiles1 = 1
-				if type1 == "CC":
-					ntiles1 = math.ceil(len(self.chains[cell1_name])/8)
-
-				ntiles2 = 1
-				if type2 == "CC":
-					ntiles2 = math.ceil(len(self.chains[cell2_name])/8)
-
+				ntiles1 = ntiles[i]
+				ntiles2 = ntiles[j]
 
 				#create a structural penalty to prevent cells from sharing the same FPGA resources
 				#(applies to the mutual exclusion of carry chains and logic cells too)
@@ -361,7 +359,7 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 				if G.has_edge(cell1_name, cell2_name):
 					connected = True #the heavy lifting and case handling has been done elsewhere, in the construction of G
 					data = G[cell1_name][cell2_name]
-					w = data["w"]
+					nEndpoints = data["w"]
 					d2u = data["d2u"]
 					if "ArcsAfter" in data and "ArcsBefore" in data:
 						narcs = data["ArcsAfter"]+data["ArcsBefore"]+1
@@ -375,13 +373,11 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 					continue
 
 				if connected and d2u:
-					self.AddKernel(lambda n: self.TimingKernel(ctx, type1, type2, n), i, j, weight=2**(narcs-maxnarc))
+					self.AddKernel(lambda n: self.NoJogsKernel(ctx, type1, type2, n), i, j, weight=w_jogs)
+					self.AddKernel(lambda n: self.TimingKernel(ctx, type1, type2, n), i, j, weight=w_timing*2**(narcs-maxnarc))
 
 				elif connected:
-					self.AddKernel(lambda n: self.WirelenKernel(ctx, type1, type2, n), i, j, weight=1/w)
-
-				# else: #repulsive weights to spread everything out over the chip a bit more; a density penalty. The idea is to give more wiggle room for legal optimization moves
-					# self.AddKernel(lambda n: self.TileExclusion(ctx, type1, type2, 1, 1, n), i, j, weight=0.1)
+					self.AddKernel(lambda n: self.WirelenKernel(ctx, type1, type2, n), i, j, weight=w_wirelen/nEndpoints)
 
 				if tile_exclude:
 					self.AddKernel(lambda n: self.TileExclusion(ctx, type1, type2, ntiles1, ntiles2, n), i, j, weight=wgt)
@@ -428,10 +424,10 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 						GcG.add_edge(dest2.cell.name, dest.cell.name)
 
 			#now this is fun.  We get to use the graph coloring task to solve this little problem so that we can solve the placement task better
-			GcTask = GraphColoringTask.GraphColoring(GcG, 8)
-			GcTask.defaultPwlSchedule(niters=10*GcTask.nnodes)
+			GcTask = GraphColoringTask.GraphColoring(8, G=GcG)
+			# GcTask.defaultPwlSchedule()
 			GcTask.e_th = 0
-			results = Annealing.Anneal(GcTask, GcTask.PwlTemp, OptsPerThrd=100, TakeAllOptions=False, backend="PottsPrecompute", substrate="CPU", nReplicates=1, nWorkers=1, nReports=10)
+			results = Annealing.Anneal(GcTask, GcTask.defaultTemp(niters=10*GcTask.nnodes), OptsPerThrd=100, TakeAllOptions=False, backend="PottsPrecompute", substrate="CPU", nReplicates=1, nWorkers=1, nReports=10)
 			colors = results['MinStates'][-1,:]
 			#reset the list in self.CellTypes to reflect the ordering that the graph coloring task used:
 			print(len(self.CellTypes["ICESTORM_LC"]))
@@ -459,9 +455,9 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 			self.BelTypes["LC%i"%(loc.z)].append(bel)
 			self.GetBelType[bel] = "LC%i"%loc.z
 
-	def SetResultInContext(self, ctx, state, strength):
+	def SetResultInContext(self, ctx, state):
 		#takes the final state of an annealing run and configures that result into the nextpnr context.
-
+		nConflicts = 0
 		for i, q in enumerate(state):
 			# if i > 5:
 				# return
@@ -483,6 +479,7 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 						self.used_bels.append(bel)
 					else:
 						print("Error, cell %s cannot be assigned to bel %s which is already assigned"%(cell_name, bel))
+						nConflicts = nConflicts + 1
 			else: #all other things that are not carry chains
 				bel = self.BelTypes[cell_type][q]
 				# print(cell.name, bel)
@@ -494,10 +491,49 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 					# cell.attrs["BEL"] = bel
 				else:
 					print("Error, cell %s cannot be assigned to bel %s which is already assigned"%(cell_name, bel))
-					# return
+					nConflicts = nConflicts + 1
+
+		return nConflicts
 
 	# =============================================================================================== kernel generators
 	# =================================================================================================================
+	def get_type_locs(self, ctx, type1):
+		locs1 = numpy.zeros([len(self.BelTypes[type1]), 2])
+		for i, bel1 in enumerate(self.BelTypes[type1]):
+			loc1 = ctx.getBelLocation(bel1)
+			locs1[i, 0] = loc1.x
+			locs1[i, 1] = loc1.y
+		return locs1
+
+	def NoJogsKernel(self, ctx, type1, type2, n=False):
+		if type1.startswith("LC") or type1 == "CC":
+			type1 = "LC0"
+		if type2.startswith("LC") or type2 == "CC":
+			type2 = "LC0" #has to be set to a specific type, so that it can find the right bel distances
+
+		name = "NoJogs between types " + type1 + " and " + type2
+
+		if n:
+			return name
+		elif name in self.KernelDict:
+			#prevent redundant construction (possibly caused by constructing compound kernels)
+			return self.KernelList[self.KernelDict[name]]
+
+		locs1 = self.get_type_locs(ctx, type1)
+		locs2 = self.get_type_locs(ctx, type2)
+		locs1 = numpy.expand_dims(locs1, 1)
+		locs2 = numpy.expand_dims(locs2, 0)
+
+		dx = numpy.abs(locs1[:,:,0]-locs2[:,:,0])
+		dy = numpy.abs(locs1[:,:,1]-locs2[:,:,1])
+
+		local_conn = (dx <= 1)*(dy<=1)*1
+		dx_conn = (dx > 1)*(dy == 0) * 1
+		dy_conn = (dy > 1)*(dx == 0) * 1
+		distant_conn = (local_conn == 0)*(dx_conn == 0)*(dy_conn == 0)*(10+(dx+dy))
+
+		return distant_conn
+
 	def TimingKernel(self, ctx, type1, type2, n=False):
 		#LC and carry chain types all use the same resource type, and have the same kernel size, so they share the same wirelen kernels
 		if type1.startswith("LC") or type1 == "CC":
@@ -513,24 +549,20 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 			#prevent redundant construction (possibly caused by constructing compound kernels)
 			return self.KernelList[self.KernelDict[name]]
 
-		kernel = numpy.zeros([len(self.BelTypes[type1]), len(self.BelTypes[type2])])
-		for i, bel1 in enumerate(self.BelTypes[type1]):
-			for j, bel2 in enumerate(self.BelTypes[type2]):
-				loc1 = ctx.getBelLocation(bel1)
-				loc2 = ctx.getBelLocation(bel2)
-				dx = abs(loc1.x - loc2.x)
-				dy = abs(loc1.y - loc2.y)
+		locs1 = self.get_type_locs(ctx, type1)
+		locs2 = self.get_type_locs(ctx, type2)
+		locs1 = numpy.expand_dims(locs1, 1)
+		locs2 = numpy.expand_dims(locs2, 0)
 
-				if dx <= 1 and dy <= 1:
-					kernel[i, j] = 0 #can't do better than this, so why assign a penalty to it?
-				elif dx > 0 and dy == 0:
-					kernel[i, j] = 10*math.ceil(dx/4)**2 #this "2" is a minor heuristic.  Milage may vary.
-				elif dy > 0 and dx == 0:
-					kernel[i, j] = 10*math.ceil(dy/4)**2
-				else:
-					kernel[i, j] = 100 #having to change both row and column is expensive, and should(?) be easy to optimize away
+		dx = numpy.abs(locs1[:,:,0]-locs2[:,:,0])
+		dy = numpy.abs(locs1[:,:,1]-locs2[:,:,1])
 
-		return kernel
+		local_conn = (dx <= 1)*(dy<=1)*0.6
+		dx_conn = (dx > 1)*(dy == 0) * (dx + 5)
+		dy_conn = (dy > 1)*(dx == 0) * (dy + 5)
+		distant_conn = (local_conn == 0)*(dx_conn == 0)*(dy_conn == 0)*3*(3+dx+dy)
+
+		return dx_conn + dy_conn + distant_conn
 
 	def WirelenKernel(self, ctx, type1, type2, n=False):
 		#LC and carry chain type all use the same resource type, and have the same kernel size, so they share the same wirelen kernels
@@ -547,20 +579,16 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 			#prevent redundant construction (possibly caused by constructing compound kernels)
 			return self.KernelList[self.KernelDict[name]]
 
-		kernel = numpy.zeros([len(self.BelTypes[type1]), len(self.BelTypes[type2])])
-		for i, bel1 in enumerate(self.BelTypes[type1]):
-			for j, bel2 in enumerate(self.BelTypes[type2]):
-				loc1 = ctx.getBelLocation(bel1)
-				loc2 = ctx.getBelLocation(bel2)
-				dx = abs(loc1.x - loc2.x)
-				dy = abs(loc1.y - loc2.y)
 
-				if dx > 0: #wirelen cost designed so that sticking to the same row or column is desirable 
-					kernel[i, j] = kernel[i, j] + (dx + 2) #this "2" is a minor heuristic.  Milage may vary.
-				if dy > 0: #horizontal runs only connect on one side, so dy should be 0 to get shared benefits .. (? am I making this up?)
-					kernel[i, j] = kernel[i, j] + (dy + 2)
+		locs1 = self.get_type_locs(ctx, type1)
+		locs2 = self.get_type_locs(ctx, type2)
+		locs1 = numpy.expand_dims(locs1, 1)
+		locs2 = numpy.expand_dims(locs2, 0)
 
-		return kernel
+		dx = numpy.abs(locs1[:,:,0]-locs2[:,:,0])
+		dy = numpy.abs(locs1[:,:,1]-locs2[:,:,1])
+
+		return dx + dy
 
 	def TileExclusion(self, ctx, type1, type2, ntiles2, ntiles1, n=False):
 		#LC and carry chain types all use the same resource type, and have the same kernel size, so they share the same wirelen kernels
@@ -572,16 +600,17 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 		if n:
 			return "TileExclusion-%s-%s-%i-%i"%(type1, type2, ntiles1, ntiles2)
 
-		bels1 = self.BelTypes[type1]
-		bels2 = self.BelTypes[type2]
-		kernel = numpy.zeros([len(bels1), len(bels2)])
-		for i, bel1 in enumerate(bels1):
-			for j, bel2 in enumerate(bels2):
-				loc1 = ctx.getBelLocation(bel1)
-				loc2 = ctx.getBelLocation(bel2)
-				kernel[i, j] = self.exclusion_factor*(loc1.y-ntiles1 < loc2.y and loc2.y < loc1.y+ntiles2 and loc1.x == loc2.x)
+		#numpy-vectorized kernel construction for improved speed
+		locs1 = self.get_type_locs(ctx, type1)
+		locs2 = self.get_type_locs(ctx, type2)
+		locs1 = numpy.expand_dims(locs1, 1)
+		locs2 = numpy.expand_dims(locs2, 0)
 
-		return kernel
+		loc1y = locs1[:,:,1]
+		loc1x = locs1[:,:,0]
+		loc2y = locs2[:,:,1]
+		loc2x = locs2[:,:,0]
+		return self.exclusion_factor*(loc1y-ntiles1 < loc2y)*(loc2y < loc1y+ntiles2)*(loc1x == loc2x)
 
 	def BelExclusion(self, n=False):
 		if n:
@@ -590,15 +619,15 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 		qMax = numpy.max(self.qSizes)
 		return numpy.eye(qMax) * self.exclusion_factor
 
-	def defaultPwlSchedule(self, niters, tmax=10):
+	def defaultTemp(self, niters, tmax=10):
 		PwlTemp = numpy.zeros([2, 3], dtype="float32")
 		PwlTemp[0,0] = tmax
 		PwlTemp[0,1] = tmax/2
-		PwlTemp[0,2] = 0.2
+		PwlTemp[0,2] = 0.02
 		PwlTemp[1,0] = 0
 		PwlTemp[1,1] = niters*0.8
 		PwlTemp[1,2] = niters
-		self.PwlTemp = PwlTemp
+		return PwlTemp
 
 	def examine_path(self, path_cell_names):
 
@@ -607,3 +636,48 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 			cell2 = path_cell_names[i]
 			if cell1 in self.G and cell2 in self.G:
 				print(self.G[cell1][cell2])
+
+
+if __name__ == '__main__':
+	
+	with open('potts_palacer_options.json', 'r') as f:
+		cmd_options = json.load(f)
+	print(cmd_options)
+
+	if "niters" in cmd_options:
+		niters = cmd_options["niters"]
+	if "cb" in cmd_options:
+		cb = cmd_options["cb"]
+	else:
+		cb = (15, 0.9, 0, 0.1)
+
+	placer = Ice40PlacerTask(ctx, cost_balancing=cb)
+	tstart = time.perf_counter()
+	results = Annealing.Anneal(vars(placer), placer.defaultTemp(niters=cmd_options["niters"], tmax=12), OptsPerThrd=1, TakeAllOptions=True, backend="PottsJit", substrate="CPU", nReplicates=1, nWorkers=1, nReports=1)
+	ttot = time.perf_counter() - tstart
+	print("Annealing time is %.2f seconds"%ttot)
+
+	with open("results/res.pkl", 'wb') as f:
+		pickle.dump(results, f)
+
+	# final_best_soln = results['AllStates'][-1,0,:]
+	final_best_soln = results['MinStates'][-1,:]
+
+	placer.SetResultInContext(ctx, final_best_soln, STRENGTH_FIXED)
+
+	#run built in place and route here to get some extra metric information
+	ctx.place()
+
+	tstart = time.perf_counter()
+	ctx.route()
+	ttot = time.perf_counter() - tstart
+	print("Routing time is %.2f seconds"%ttot)
+
+	for key in ctx.timing_result.clock_fmax:
+		print("Achieved FMAX: %.2f"%ctx.timing_result.clock_fmax[key.first].achieved)
+
+	# potts_cost = placer.EvalCost(final_best_soln)
+	potts_cost = results["AllEnergies"][-1,0]
+	potts_cost = results["MinEnergies"][-1]
+
+	print("Final Potts cost: %.2f"%potts_cost)

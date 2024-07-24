@@ -80,11 +80,8 @@ class BaseTask:
 
 	def AddKernel(self, creator, i, j, weight=1):
 		#first, see if kernel has already been created, and if not, create it:
-		# weight = int(weight*32)
-		# weight = weight/32. #conversion to make weights have limited precision
-		# if weight == 0:
-			# return #weight is too weak, just ignore.
-		# assert (i != j)
+		if weight == 0:
+			return
 		kName = creator(True)
 		if kName not in self.KernelDict:
 			self.KernelList.append(creator(False))

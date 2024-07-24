@@ -1,9 +1,70 @@
+import subprocess
+import os
+import re
+import json
+from matplotlib import pyplot as plt
+
+def extract_float(s, pattern):
+	match = re.search(pattern, s)
+	if match:
+		return float(match.group(1))
+	return None
+
+def run_command(command):
+	process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+	stdout, stderr = process.communicate()
+	stdout = stdout.decode('utf-8')
+	stderr = stderr.decode('utf-8')
+	return stdout, stderr
+
+nextpnr_cmd = "nextpnr-ice40 --json DemoFiles/core.json --hx1k --pcf DemoFiles/core.pcf --pre-place Tasks/Ice40PlacerTask.py"
+
+pc = []
+tgt = []
+for i in range(10):
+	niters = 1e6*(1.5**i)
+	cmd_options = {"niters": niters}
+	with open('potts_palacer_options.json', 'w') as f:
+		json.dump(cmd_options, f)
+		
+	stdout, stderr = run_command(nextpnr_cmd)
+
+	fmax = extract_float(stdout, pattern = r'Achieved FMAX: (\d+\.\d+)')
+	route_time = extract_float(stdout, pattern = r'Routing time is (\d+\.\d+)')
+	potts_cost = extract_float(stdout, pattern = r'Final Potts cost: (\d+\.\d+)')
+
+	timing_cost = extract_float(stderr, pattern = r'timing cost = (\d+)')
+	wirelen = extract_float(stderr, pattern = r'wirelen = (\d+)')
+
+	print(fmax, route_time, potts_cost, timing_cost, wirelen)
+
+	pc.append(potts_cost)
+	tgt.append(wirelen)
+
+plt.figure()
+plt.scatter(pc, tgt)
+plt.show()
+exit()
+
 #script to be run as embedded python in nextpnr.
 #saves the nextpnr "context" ctx to pickle for external analysis and use
 
 # d = dict(locals())
 # for key in d:
 	# print(key, d[key])
+# ctx.place()
+# print("Returned thing:", y)
+# ctx.route()
+# for thing in dir(ctx):
+	# print(thing)
+# for key in ctx.timing_result.clock_fmax:
+	# print(key.first)
+	# print(key.second)
+	# for thing in dir(ctx.timing_result.clock_fmax[key.first]):
+		# print(thing)
+	# print(key, ctx.timing_result.clock_fmax[key.first].achieved)
+# print(ctx.timing_result.clock_fmax)
+# exit()
 
 # import pickle
 # import networkx as nx
@@ -15,6 +76,8 @@ import Annealing
 from matplotlib import pyplot as plt
 import time
 import pickle
+import cProfile
+
 
 # print(ctx.timing_result)
 # for thing in dir(ctx.timing_result):
@@ -53,24 +116,23 @@ import pickle
 # placer.DisplayWeights()
 
 
-
+# cProfile.run('Ice40PlacerTask.Ice40PlacerTask(ctx, exclusion_factor=15)', sort='cumulative')
+# exit()
 
 
 # plt.figure()
-for excl in [15]:
-	placer = Ice40PlacerTask.Ice40PlacerTask(ctx, exclusion_factor=excl)
+for excl in [10]:
+	placer = Ice40PlacerTask.Ice40PlacerTask(ctx)
 		# exit()
 	for temp in [5]:
 		
-		placer.defaultPwlSchedule(niters=1e5, tmax=10)
-		placer.e_th = -1e14
 		tstart = time.perf_counter()
-		results = Annealing.Anneal(vars(placer), placer.PwlTemp, OptsPerThrd=10, TakeAllOptions=True, backend="PottsJit", substrate="CPU", nReplicates=4, nWorkers=1, nReports=1)
+		results = Annealing.Anneal(vars(placer), placer.defaultTemp(niters=1e7, tmax=12), OptsPerThrd=1, TakeAllOptions=True, backend="PottsJit", substrate="CPU", nReplicates=1, nWorkers=1, nReports=1)
 		# results = Annealing.Anneal(vars(placer), PwlTemp, OptsPerThrd=1, TakeAllOptions=False, backend="PottsJit", substrate="CPU", nReplicates=1, nWorkers=1, nReports=10)
 		ttot = time.perf_counter() - tstart
 		print("Annealing time is %.2f seconds"%ttot)
 
-		with open("res.pkl", 'wb') as f:
+		with open("results/res.pkl", 'wb') as f:
 			pickle.dump(results, f)
 		# for i in range(16):
 			# final_best_soln = results['AllMinStates'][-2, i, :]

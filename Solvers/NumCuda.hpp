@@ -23,7 +23,7 @@ public:
 	npy_intp NpyTypeId;
 
     // ================================================================================= CONSTRUCTORS, DESTRUCTORS, ETC
-    __host__ __device__ NumCuda(NumCuda && source){ //needed with some compilers (gcc 9) but not others (gcc 11)
+    __host__ __device__ NumCuda(const NumCuda && source){ //needed with some compilers (gcc 9) but not others (gcc 11)
         dd = source.dd;
         hd = source.hd;
 
@@ -45,7 +45,7 @@ public:
         NpyTypeId = source.NpyTypeId;
     }
 
-    __host__ __device__ NumCuda(NumCuda & source){
+    __host__ __device__ NumCuda(const NumCuda & source){
         //custom copy constructor,
         //so that we can keep track of how many references there are to the data arrays,
         //so that we can correctly decide when to free the allocated memory
