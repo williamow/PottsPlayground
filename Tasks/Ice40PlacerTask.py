@@ -1,13 +1,12 @@
 import numpy
 import networkx as nx
 from matplotlib import pyplot as plt
-from Tasks import BaseTask
-from Tasks import GraphColoringTask
-import Annealing
+import PottsPlayground #import includes self. What will happen? No obvious issues.  Maybe the interpreter knows not to make this a circular thing.
+from PottsPlayground.Tasks import BaseTask
+from PottsPlayground.Tasks import GraphColoringTask
 import math
 import time
 import pickle
-import json
 
 def GetCellPortNetName(cell, name):
 	if cell.ports[name].net is not None:
@@ -91,8 +90,30 @@ def FollowArcs(ctx, G, cell_name, ArcsBefore=0, names_before=[]):
 
 
 class Ice40PlacerTask(BaseTask.BaseTask):
+	"""
+	Potts Model that corresponds to placing logic elements in an Ice40 FPGA.  Ties in with the NextPNR tool;
+	is not 100% functional, but can be used to place many FPGA designs.  Supports LUTs, carry chains, and IO.
+	"""
 
 	def __init__(self, ctx, cost_balancing=(15, 0.5, 1, 0), split_cells=True, verbose=False):
+		"""
+		Creates a model of FPGA placement given a NextPNR context.  The context is available when running a Python script inside of
+		the NextPNR tool.  The context includes both information about the specific FPGA (availability and locations of physical Basic ELements i.e. BELs)
+		and about the design that needs to be placed (logical BELs and their connectivity).  There are several different optimization objectives that
+		can be balanced.  The first objective, 'exclusion', is mandatory, since it enforces that multiple logical BELs are not assigned to
+		the same physical BEL.  'wirelen' tries to minimize overall distance between connected logical BELs; 'timing' weighs critical path connections
+		more to keep the critical path as fast as possible; and 'jogs' tries to assign connected BELs to the same row or column so that 
+		only a single horizontal or vertical routing channel is needed to connect them.
+
+		:param ctx: A NextPNR context opbject.
+		:param cost_balancing: Specifies relative weight of different optimization objectives. Objectives are (exclusion, wirelen, timing, jogs)
+		:type cost_balancing: tuple
+		:param split_cells: FPGA LUTs are grouped in blocks of eight; each of the eight have nearly similar connectivity.  If split_cells is True,
+		each logical LUT is pre-constrained to one of the eight LUT positions.  This reduces the optimization space for faster results.
+		:type split_cells: boolean
+		:type verbose: boolean
+		"""
+
 		#======================================================construct friendlier formats of the design specifications
 		#get lists of bel types in the architecture:
 		exclusion_factor = cost_balancing[0]
@@ -427,7 +448,7 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 			GcTask = GraphColoringTask.GraphColoring(8, G=GcG)
 			# GcTask.defaultPwlSchedule()
 			GcTask.e_th = 0
-			results = Annealing.Anneal(GcTask, GcTask.defaultTemp(niters=10*GcTask.nnodes), OptsPerThrd=100, TakeAllOptions=False, backend="PottsPrecompute", substrate="CPU", nReplicates=1, nWorkers=1, nReports=10)
+			results = PottsPlayground.Anneal(GcTask, GcTask.defaultTemp(niters=10*GcTask.nnodes), OptsPerThrd=100, TakeAllOptions=False, backend="PottsPrecompute", substrate="CPU", nReplicates=1, nWorkers=1, nReports=10)
 			colors = results['MinStates'][-1,:]
 			#reset the list in self.CellTypes to reflect the ordering that the graph coloring task used:
 			print(len(self.CellTypes["ICESTORM_LC"]))
@@ -456,7 +477,16 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 			self.GetBelType[bel] = "LC%i"%loc.z
 
 	def SetResultInContext(self, ctx, state):
-		#takes the final state of an annealing run and configures that result into the nextpnr context.
+		"""
+		Takes the final state of an annealing run and configures that result into the nextpnr context.
+		The context is not returned but afterwards should contain added constraints corresponding to the given state.
+
+		:param ctx: NextPNR context corresponding to the PlacerTask.
+		:param state: A Potts model state.
+		:type state: 1-D Numpy int array
+		:return: Number of conflicts, i.e. number of BELs assigned to incompatible physical locations.  Should be 0 for a successful run.
+		:rtype: int
+		"""
 		nConflicts = 0
 		for i, q in enumerate(state):
 			# if i > 5:
@@ -476,6 +506,7 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 					bel = self.BelTypes[LCtype][q+int(j/8)]#move to the next tile for each 8 logic cells
 					if bel not in self.used_bels:
 						cell.setAttr("BEL", bel)
+						# ctx.bindBel(bel, cell, STRENGTH_STRONG)
 						self.used_bels.append(bel)
 					else:
 						print("Error, cell %s cannot be assigned to bel %s which is already assigned"%(cell_name, bel))
@@ -487,6 +518,7 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 				if bel not in self.used_bels:
 					# ctx.bindBel(bel, cell, strength)
 					cell.setAttr("BEL", bel)
+					# ctx.bindBel(bel, cell, STRENGTH_STRONG)
 					self.used_bels.append(bel)
 					# cell.attrs["BEL"] = bel
 				else:
@@ -579,7 +611,6 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 			#prevent redundant construction (possibly caused by constructing compound kernels)
 			return self.KernelList[self.KernelDict[name]]
 
-
 		locs1 = self.get_type_locs(ctx, type1)
 		locs2 = self.get_type_locs(ctx, type2)
 		locs1 = numpy.expand_dims(locs1, 1)
@@ -619,15 +650,6 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 		qMax = numpy.max(self.qSizes)
 		return numpy.eye(qMax) * self.exclusion_factor
 
-	def defaultTemp(self, niters, tmax=10):
-		PwlTemp = numpy.zeros([2, 3], dtype="float32")
-		PwlTemp[0,0] = tmax
-		PwlTemp[0,1] = tmax/2
-		PwlTemp[0,2] = 0.02
-		PwlTemp[1,0] = 0
-		PwlTemp[1,1] = niters*0.8
-		PwlTemp[1,2] = niters
-		return PwlTemp
 
 	def examine_path(self, path_cell_names):
 
@@ -639,45 +661,10 @@ class Ice40PlacerTask(BaseTask.BaseTask):
 
 
 if __name__ == '__main__':
-	
-	with open('potts_palacer_options.json', 'r') as f:
-		cmd_options = json.load(f)
-	print(cmd_options)
-
-	if "niters" in cmd_options:
-		niters = cmd_options["niters"]
-	if "cb" in cmd_options:
-		cb = cmd_options["cb"]
-	else:
-		cb = (15, 0.9, 0, 0.1)
-
-	placer = Ice40PlacerTask(ctx, cost_balancing=cb)
+	placer = Ice40PlacerTask(ctx, cost_balancing=(15, 0.5, 1, 0.1))
 	tstart = time.perf_counter()
-	results = Annealing.Anneal(vars(placer), placer.defaultTemp(niters=cmd_options["niters"], tmax=12), OptsPerThrd=1, TakeAllOptions=True, backend="PottsJit", substrate="CPU", nReplicates=1, nWorkers=1, nReports=1)
+	results = Annealing.Anneal(vars(placer), placer.defaultTemp(niters=5e6, tmax=12), OptsPerThrd=1, TakeAllOptions=True, backend="PottsJit", substrate="CPU", nReplicates=1, nWorkers=1, nReports=1)
 	ttot = time.perf_counter() - tstart
-	print("Annealing time is %.2f seconds"%ttot)
+	print("Annealing time is %.2f seconds"%ttot) 
 
-	with open("results/res.pkl", 'wb') as f:
-		pickle.dump(results, f)
-
-	# final_best_soln = results['AllStates'][-1,0,:]
-	final_best_soln = results['MinStates'][-1,:]
-
-	placer.SetResultInContext(ctx, final_best_soln, STRENGTH_FIXED)
-
-	#run built in place and route here to get some extra metric information
-	ctx.place()
-
-	tstart = time.perf_counter()
-	ctx.route()
-	ttot = time.perf_counter() - tstart
-	print("Routing time is %.2f seconds"%ttot)
-
-	for key in ctx.timing_result.clock_fmax:
-		print("Achieved FMAX: %.2f"%ctx.timing_result.clock_fmax[key.first].achieved)
-
-	# potts_cost = placer.EvalCost(final_best_soln)
-	potts_cost = results["AllEnergies"][-1,0]
-	potts_cost = results["MinEnergies"][-1]
-
-	print("Final Potts cost: %.2f"%potts_cost)
+	placer.SetResultInContext(ctx, results['MinStates'][-1,:])

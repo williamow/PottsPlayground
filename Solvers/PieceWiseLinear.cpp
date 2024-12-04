@@ -10,24 +10,24 @@
 class PieceWiseLinear{
 public:
 
-	float f[32];
-	int x[32];
+	float f[128];
+	long x[128];
 	int nSegments;
 
 	float slope;
 	float offset;
 
-	int LastDiscontinuity;
-	int NextDiscontinuity;
+	long LastDiscontinuity;
+	long NextDiscontinuity;
 
     // ================================================================================= CONSTRUCTORS, DESTRUCTORS, ETC
     __host__ PieceWiseLinear(NumCuda<float> &source){
         //initialize from a NumCuda array:
         nSegments = source.dims[1];
-        if (nSegments > 32) printf("Error: PieceWiseLinear class can only handle a maximum of 31 segments");
+        if (nSegments > 128) printf("Error: PieceWiseLinear class can only handle a maximum of 128 points, the source has %i points\n", nSegments);
         for (int i = 0; i<nSegments; i++){
         	f[i] = source(0, i);
-        	x[i] = int(source(1, i));
+        	x[i] = long(source(1, i));
         }
         LastDiscontinuity = 1; //an initial setting that will force a segment identifcation at the first interpolation request
         NextDiscontinuity = 0;
@@ -35,7 +35,7 @@ public:
 
     __host__ __device__ PieceWiseLinear(){}
 
-    __host__ __device__ float interp(int iter){
+    __host__ __device__ float interp(long iter){
     	//interpolation, designed to be efficient when the iter repeatadly draws from the same line segment before switching 
     	if (iter < LastDiscontinuity || iter > NextDiscontinuity){
     		//we need to find the correct operating segment

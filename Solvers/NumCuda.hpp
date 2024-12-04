@@ -9,13 +9,14 @@
 #include <numpy/ndarrayobject.h>
 #include <cuda_runtime.h>
 #include <typeinfo>
+#include <atomic>
 
 template <typename T> class NumCuda{
 public:
 	T * dd; //device data
 	T * hd; //host data
-    int * dd_refcount; //flags to indicate if the descructor should free the memory at dd or hd when the object is deleted
-    int * hd_refcount;
+    std::atomic_int * dd_refcount; //flags to indicate if the descructor should free the memory at dd or hd when the object is deleted
+    std::atomic_int * hd_refcount;
 	npy_intp dims[5]; //5 dimensions max. Making this fixed length so that I don't have to track memory allocation
 	int ndims;
 	int nBytes;
@@ -142,28 +143,18 @@ public:
         for (ndims = 0; ndims < 5; ndims++){
             if (dims[ndims] == -1) break;
             nElements *= dims[ndims];
-        }
-
-        //set up metadata:
-        // if (d1==-1 && d2==-1 && d3==-1 && d4==-1) ndims=1;
-        // else if (d2==-1 && d3==-1 && d4==-1) ndims=2;
-        // else if (d3==-1 && d4==-1) ndims=3;
-        // else if (d4==-1) ndims=4;
-        // else ndims=5;
-        // // ndims = ndims_;
-        // nElements = d0*d1*d2*d3*d4;
-        
+        }      
 
         nBytes = nElements*sizeof(T);
 
         //set up host array memory
         hd = (T*)malloc(nBytes);
-        hd_refcount = (int*)malloc(sizeof(int));
+        hd_refcount = new std::atomic_int;// (int*)malloc(sizeof(std::atomic_int));
         *hd_refcount = 1;
 
         //set up device array memory
         cudaError_t err = cudaMalloc((void **)&dd, nBytes);
-        dd_refcount = (int*)malloc(sizeof(int));
+        dd_refcount = new std::atomic_int;
         *dd_refcount = 1;
         if (err != cudaSuccess) {
             printf("Error Allocating Cuda memory: %s.  Array size = [%i, %i, %i, %i, %i]\n", cudaGetErrorString(err), int(dims[0]), int(dims[1]), int(dims[2]), int(dims[3]), int(dims[4]));
@@ -230,7 +221,7 @@ public:
         if (CopyToHost){
             hd = (T*)malloc(nBytes);
             memcpy(hd, PyArray_DATA(source), nBytes);
-            hd_refcount = (int*)malloc(sizeof(int));
+            hd_refcount = new std::atomic_int;
             *hd_refcount = 1;
         }
         else {
@@ -241,7 +232,7 @@ public:
         //set up device array memory
         cudaError_t err = cudaSuccess;
         err = cudaMalloc((void **)&dd, nBytes);
-        dd_refcount = (int*)malloc(sizeof(int));
+        dd_refcount = new std::atomic_int;
         *dd_refcount = 1;
         if (err != cudaSuccess) {
             printf("Error Allocating Cuda memory: %s\n", cudaGetErrorString(err));
@@ -369,16 +360,16 @@ public:
 
     __host__ __device__ float mean(){
         //returns the minimum value
-        T * data;
-        #ifdef __CUDA_ARCH__
-            data =  dd;
-        #else
-            data = hd;
-        #endif
-        float m = 0;
+        // T * data;
+        // #ifdef __CUDA_ARCH__
+        //     data =  dd;
+        // #else
+        //     data = hd;
+        // #endif
+        float m = sum();
         // printf("nElements: %i\n", nElements);
-        for (int i = 0; i<nElements; i++)
-            m += data[i];
+        // for (int i = 0; i<nElements; i++)
+            // m += data[i];
         return m/nElements;
     }
 

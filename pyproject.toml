@@ -1,0 +1,9 @@
+[build-system]
+requires = ["setuptools", "setuptools_cuda_cpp", "numpy"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "PottsPlayground"
+readme = "README.rst"
+description = "For creating and solving Potts-model representations of combinatorial optimization problems"
+version= "0.1.1"

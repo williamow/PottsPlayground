@@ -44,8 +44,6 @@ PottsPrecomputeBase::PottsPrecomputeBase(PyObject *task, int nReplicates, bool U
 	}
 	sparse_kernels.CopyHostToDevice();
 
-	if (USE_GPU) dispatch = GpuDispatch<PottsPrecomputeAnnealable>;
-    else         dispatch = CpuDispatch<PottsPrecomputeAnnealable>;
 }
 
 __host__ __device__ float PottsPrecomputeBase::EnergyOfState(int* state){
@@ -107,7 +105,7 @@ __host__ __device__ void PottsPrecomputeBase::BeginEpoch(int iter){
 }
 
 __host__ __device__ void PottsPrecomputeBase::FinishEpoch(){
-	float eps = 1;
+	float eps = 0.01;
 	float e = EnergyOfState(MiWrk);
 	if (current_e + eps < e || current_e - eps > e)
 		printf("Working Energy tracking error: actual=%.5f, tracked=%.5f\n", e, current_e); 
@@ -115,7 +113,7 @@ __host__ __device__ void PottsPrecomputeBase::FinishEpoch(){
 
 // ===================================================================================annealing methods
 //how much the total energy will change if this action is taken
-__host__ __device__ float PottsPrecomputeBase::GetActionDE(int action_num){
+__host__ __device__ float PottsPrecomputeBase::RealDE(int action_num){
 	int action_partition = partitions(action_num);
 	int new_Mi = partition_states(action_num);
 	int old_Mi = MiWrk[action_partition];
@@ -123,13 +121,21 @@ __host__ __device__ float PottsPrecomputeBase::GetActionDE(int action_num){
 	// printf("Action: (M=%i, q=%i, pE=%.2f) -> (M=%i, q=%i, pE=%.2f)\n",
 		// action_partition, old_Mi, NHPP_potentials(Rep, old_NHPP), action_partition, new_Mi, NHPP_potentials(Rep, action_num));
     return NHPP_potentials(Rep, action_num) - NHPP_potentials(Rep, old_NHPP);
-} 
+}
+
+__host__ __device__ float PottsPrecomputeBase::PE(int action_num){
+    return NHPP_potentials(Rep, action_num);
+}
+
 
 //changes internal state to reflect the annealing step that was taken
 __host__ __device__ void PottsPrecomputeBase::TakeAction_tic(int action_num){
-	float dE = GetActionDE(action_num);
+	float dE = RealDE(action_num);
 	// printf("taking action %i with dE %.5f\n", action_num, dE);
 	current_e += dE;
+
+	int j = partitions(action_num);
+	old_Mi = MiWrk[j]; //this needs to be determined here in tic, so that all threads have the correct old_Mi before MiWrk is set to the new Mi
 }
 
 __host__ __device__ void PottsPrecomputeBase::TakeAction_toc(int action_num){
@@ -137,7 +143,6 @@ __host__ __device__ void PottsPrecomputeBase::TakeAction_toc(int action_num){
 
 	int j = partitions(action_num);
 	int new_Mi = partition_states(action_num);
-	int old_Mi = MiWrk[j];
 	int old_NHPP = qCumulative(j)-qSizes(j) + old_Mi;
 	MiWrk[j] = new_Mi;
         
@@ -164,6 +169,26 @@ __host__ __device__ void PottsPrecomputeBase::TakeAction_toc(int action_num){
 			NHPP_potentials(Rep, NHPP+q) += ww;
 		}
     }
+}
 
 
+//derived classes with minor adjustments:
+__host__ PottsPrecomputeAnnealable::PottsPrecomputeAnnealable(PyObject *task, int nReplicates, bool USE_GPU):
+	PottsPrecomputeBase(task, nReplicates, USE_GPU) {
+	if (USE_GPU) dispatch = GpuDispatch<PottsPrecomputeAnnealable>;
+	else         dispatch = CpuDispatch<PottsPrecomputeAnnealable>;
+}
+	
+__host__ __device__ float PottsPrecomputeAnnealable::GetActionDE(int action_num){
+	return RealDE(action_num);
+}
+
+__host__ PottsPrecomputePEAnnealable::PottsPrecomputePEAnnealable(PyObject *task, int nReplicates, bool USE_GPU):
+	PottsPrecomputeBase(task, nReplicates, USE_GPU) {
+	if (USE_GPU) dispatch = GpuDispatch<PottsPrecomputePEAnnealable>;
+	else         dispatch = CpuDispatch<PottsPrecomputePEAnnealable>;
+}
+
+__host__ __device__ float PottsPrecomputePEAnnealable::GetActionDE(int action_num){
+	return PE(action_num);
 }
