@@ -1,18 +1,20 @@
 import setuptools
-from setuptools_cuda_cpp import CUDAExtension, BuildExtension, fix_dll #builds using NVCC
 import numpy
+import shutil
 
-cuda_ext = CUDAExtension(
+#if NVCC is found, build with GPU support, else just build for CPU:
+if shutil.which("nvcc") is not None:
+
+    from setuptools_cuda_cpp import CUDAExtension, BuildExtension, fix_dll #builds using NVCC
+
+    build={'build_ext': BuildExtension}
+    ext = CUDAExtension(
             name="PottsPlayground.Annealing",
             sources=(
-                "Solvers/PottsJitAnnealable.cu",
-                "Solvers/IsingAnnealable.cu",
-                "Solvers/PottsPrecomputeAnnealable.cu",
-                "Solvers/TspAnnealable.cu",
-                "Solvers/Annealing.cu",
+                "PottsPlayground/Solvers/Annealing.cpp",
+                "PottsPlayground/Solvers/CpuCore.cpp",
 
-                #these ones compile only by include, but I include them so that changes trigger re-compiling:
-                "Solvers/AnnealingCore.cu"
+                "PottsPlayground/Solvers/GpuCore.cu"
                 ),
             include_dirs=[numpy.get_include()],
             libraries=["cudart"],
@@ -20,13 +22,29 @@ cuda_ext = CUDAExtension(
             extra_compile_args={"cxx": ["-std=c++17"], "nvcc": ["-std=c++17"]},
         )
 
+
+else:
+    build={}
+    ext = setuptools.Extension(
+            name="PottsPlayground.Annealing",
+            sources=[
+                "PottsPlayground/Solvers/Annealing.cpp",
+                "PottsPlayground/Solvers/CpuCore.cpp",
+
+                "PottsPlayground/Solvers/GpuCoreAlt.cpp"
+                ],
+            include_dirs=[numpy.get_include()],
+
+            extra_compile_args=["-std=c++17"],
+        )
+
 setuptools.setup(
     name="PottsPlayground",
     # version=0.1,
     packages=['PottsPlayground', 'PottsPlayground.Tasks'],
-    package_dir = {"PottsPlayground": "init", "PottsPlayground.Tasks": "Tasks"},
-    ext_modules=[cuda_ext],
-    cmdclass={'build_ext': BuildExtension},
+    package_dir = {"PottsPlayground": "PottsPlayground", "PottsPlayground.Tasks": "PottsPlayground/Tasks"},
+    ext_modules=[ext],
+    cmdclass=build,
 )
 
 #good references for how to use setuptools:

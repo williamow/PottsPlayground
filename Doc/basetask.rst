@@ -2,8 +2,5 @@
 Base Task
 =========
 
-.. autoclass:: PottsPlayground.BaseTask
+.. autoclass:: PottsPlayground.Tasks.BaseTask
    :members:
-
-BaseTask Examples
-=================

@@ -4,38 +4,12 @@
 #whitelist files in root
 !/* 
 
-#whitelist code source folders
-!/Solvers/
-!/Tasks/
-!/init/
-!/Doc/
-
-#whitelist the subdirectories of boards
-# !*/*/
-
-#whitelist code source files
+#whitelist source files
 # !boards/*/
 !*.py
-!*.hpp
+!*.h
 !*.cpp
 !*.cu
 !*.rst
 !*.bat
 !*Makefile
-
-
-# #whitelist verilog work in the firmware directory
-# !/firmware/
-# !*.v
-# !*.pcf
-# !*.sh
-
-# #whitelist python stuff
-# !/host software/
-# !*.py
-# !*.pkl
-
-# #whitelist autodesk inventor files
-# !/optics chassis/
-# !*.ipt
-

@@ -5,22 +5,22 @@ Specific Tasks
 
 Graph Coloring
 ==============
-.. autoclass:: PottsPlayground.GraphColoringTask
+.. autoclass:: PottsPlayground.Tasks.GraphColoring
    :members:
 
 Traveling Salesman
 ==================
-.. autoclass:: PottsPlayground.TravelingSalesmanTask
+.. autoclass:: PottsPlayground.Tasks.TravelingSalesman
    :members:
 
 
-Ice40 Logic Placement
-=====================
-.. autoclass:: PottsPlayground.Ice40PlacerTask
-   :members:
+.. Ice40 Logic Placement
+.. =====================
+.. .. autoclass:: PottsPlayground.Tasks.Ice40Placer
+..    :members:
 
 
-Invertible Logic
-================
-.. autoclass:: PottsPlayground.InvertibleLogicTask
-   :members:
+.. Invertible Logic
+.. ================
+.. .. autoclass:: PottsPlayground.Tasks.InvertibleLogic
+..    :members:

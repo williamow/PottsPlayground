@@ -7,3 +7,12 @@ name = "PottsPlayground"
 readme = "README.rst"
 description = "For creating and solving Potts-model representations of combinatorial optimization problems"
 version= "0.1.1"
+dependencies = [
+	"matplotlib>=3.5.0",
+	"networkx>=3.0",
+	"numpy>=1.22.0",
+	"blifparser",
+	"minorminer",
+	"dimod",
+	"dwave-system"
+]
