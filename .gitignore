@@ -1,11 +1,13 @@
 #blacklist everything
 *
 
-#whitelist files in root
+#whitelist files and folders in root
 !/* 
 
-#whitelist source files
-# !boards/*/
+#whitelist nested source folders
+!/PottsPlayground/*
+
+#whitelist source file types
 !*.py
 !*.h
 !*.cpp
