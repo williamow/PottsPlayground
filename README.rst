@@ -16,6 +16,7 @@ Built-in combinatorial problems can be generated and solved easily:
 There is also a BaseTask class that can be used to try out any Potts Model problem representations you can think of, and anneal it using the high-performance backend.
 
 Features:
+
 * Structured construction of Potts Models
 * Conversion from Potts to Ising models
 * Minor Embedding of Ising models
