@@ -46,7 +46,7 @@ class BaseTask:
 	def InitKernelManager(self):
 		"""
 		Initializes the kernel manager system, which is used for building up weight matrices piece by piece,
-		by initializing a few empty variables.
+		by initializing a few empty variables.  SetPartitions(...) must be called beforehand.
 
 		:return: None
 		"""
@@ -55,7 +55,9 @@ class BaseTask:
 		self.graph = networkx.MultiDiGraph()
 		#directed graph, so that the kernel in each direction can be different (usually just a transpose.)
 		#MultiGraph, so that multiple kernels can be applied to the same edge.
-		# self.kMapLists = {}
+		#fill the graph with all nodes here in advance:
+		for i in range(self.nnodes):
+			self.graph.add_node(i)
 
 	def AddKernel(self, creator, i, j, weight=1):
 		"""
@@ -112,6 +114,7 @@ class BaseTask:
 
 		#sparse kmap:
 		nPartitions = self.qSizes.shape[0]
+		assert nPartitions == self.graph.number_of_nodes()
 		maxDensity = numpy.max([self.graph.out_degree(i) for i in range(nPartitions)])
 		total_count = 0
 		kmap_sparse = numpy.zeros([nPartitions, maxDensity+1,3], dtype="float16")
@@ -119,8 +122,9 @@ class BaseTask:
 			kmap_sparse[i,0,0] = self.graph.out_degree(i)+1 #+1, so that it directly tells the stop index, rather than the number of elements
 			for c, (u, v, edge_data) in enumerate(self.graph.out_edges(i, data=True)):
 				kmap_sparse[i,c+1,:] = [edge_data['kIndex'], edge_data['weight'], v]
-			total_count = total_count + c
-		print("Done making sparse kernel map, density = %.3f"%(total_count/nPartitions**2))
+			total_count = total_count + len(self.graph.out_edges(i))
+		self.sparse_kmap_density = (total_count/(nPartitions**2))
+		# print("Done making sparse kernel map, density = %.3f"%)
 
 		#cast back to float 32.  By starting with float 16 and copying to float32,
 		#hopefully the floats will be truncated so as to avoid some cumulative errors in 32 bit FP math

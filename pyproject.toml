@@ -6,13 +6,25 @@ build-backend = "setuptools.build_meta"
 name = "PottsPlayground"
 readme = "README.rst"
 description = "For creating and solving Potts-model representations of combinatorial optimization problems"
-version= "0.1.1"
+dynamic = ["version"]
+requires-python = ">= 3.6"
 dependencies = [
-	"matplotlib>=3.5.0",
-	"networkx>=3.0",
-	"numpy>=1.22.0",
-	"blifparser",
-	"minorminer",
-	"dimod",
-	"dwave-system"
+	"matplotlib>=0.0.0",
+	"networkx>=2.0",
+	"numpy>=1.17.0",
+	#"blifparser>=0.0.0",
+	"minorminer>=0.0.0",
+	"dimod>=0.0.0",
+	"dwave-system>=0.0.0"
 ]
+authors = [
+  { name = "William Whitehead", email="williamwhitehead@ucsb.edu" },
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "PottsPlayground.__version__"}
+
+
+[project.urls]
+documentation = "https://williamow.github.io/PottsPlayground/index.html"
+source = "https://github.com/williamow/PottsPlayground/"

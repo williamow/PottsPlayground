@@ -2,6 +2,13 @@ import setuptools
 import numpy
 import shutil
 
+with open("PottsPlayground/__init__.py", "r") as f:
+    for line in f:
+        if line.startswith("__version__"):
+            # Extract the version string (e.g., "__version__ = '0.1.0'")
+            version = line.split("=")[1].strip().strip('"').strip("'")
+            break
+
 #if NVCC is found, build with GPU support, else just build for CPU:
 if shutil.which("nvcc") is not None:
 
@@ -19,7 +26,7 @@ if shutil.which("nvcc") is not None:
             include_dirs=[numpy.get_include()],
             libraries=["cudart"],
 
-            extra_compile_args={"cxx": ["-std=c++17"], "nvcc": ["-std=c++17"]},
+            # extra_compile_args={"cxx": ["-std=c++17"], "nvcc": ["-std=c++17"]},
         )
 
 
@@ -35,14 +42,23 @@ else:
                 ],
             include_dirs=[numpy.get_include()],
 
-            extra_compile_args=["-std=c++17"],
+            # extra_compile_args=["-std=c++17", "/std:c++17"], #first one is for linuxland, second for stupid MSVC
         )
 
 setuptools.setup(
     name="PottsPlayground",
-    # version=0.1,
-    packages=['PottsPlayground', 'PottsPlayground.Tasks'],
-    package_dir = {"PottsPlayground": "PottsPlayground", "PottsPlayground.Tasks": "PottsPlayground/Tasks"},
+    version=version,
+    packages=['PottsPlayground', 'PottsPlayground.Test', 'PottsPlayground.Tasks'],
+    package_dir = { "PottsPlayground":          "PottsPlayground",
+                    "PottsPlayground.Test":     "PottsPlayground/Test",
+                    "PottsPlayground.Tasks":    "PottsPlayground/Tasks"},
+    install_requires = ["matplotlib>=0.0.0",
+                        "networkx>=2.0",
+                        "numpy>=1.17.0",
+                        #"blifparser>=0.0.0",
+                        "minorminer>=0.0.0",
+                        "dimod>=0.0.0",
+                        "dwave-system>=0.0.0"],
     ext_modules=[ext],
     cmdclass=build,
 )

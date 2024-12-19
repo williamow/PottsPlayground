@@ -8,6 +8,7 @@
 #include <numpy/ndarrayobject.h>
 #include <typeinfo>
 #include <atomic>
+#include <stdint.h>
 
 #ifdef __CUDACC__
     #include <cuda_runtime.h>
@@ -150,18 +151,14 @@ public:
     // ======================================================================================================Export and display
 
 	__h__ PyObject* ExportNumpy(){
-        // printf("Here 1\n");
         T* copied_data = (T*)malloc(nBytes);
-        // printf("Here 2\n");
         memcpy(copied_data, hd, nBytes);
-        // printf("Here 3\n");
         // printf("Size of intp: %i\n", sizeof(npy_intp));
         npy_intp * copied_dims = (npy_intp*)malloc(sizeof(npy_intp)*ndims);
         for (int i = 0; i<ndims;i++)
             copied_dims[i] = dims[i];
-        // printf("NpyTypeId: %i, %i, %i\n", NpyTypeId, NPY_INT, NPY_FLOAT);
+        // printf("NpyTypeId: %i, %i, %i\n", NpyTypeId, NPY_INT32, NPY_FLOAT32);
         PyObject* x = PyArray_SimpleNewFromData(npy_intp(ndims), copied_dims, NpyTypeId, copied_data);
-        // printf("Here 4\n");
         return x;
     }
 
@@ -305,8 +302,8 @@ template <typename T> __h__ void NumCuda<T>::construct_from_pyarray(PyArrayObjec
     }
 
     //type checking:
-    if (typeid(T) == typeid(int)) NpyTypeId = NPY_INT;
-    else if (typeid(T) == typeid(float)) NpyTypeId = NPY_FLOAT;
+    if (typeid(T) == typeid(int32_t)) NpyTypeId = NPY_INT32;
+    else if (typeid(T) == typeid(float)) NpyTypeId = NPY_FLOAT32;
     if (PyArray_TYPE(source) != NpyTypeId){
         printf("A Numpy array type does not match required C object type\n");
         throw;
@@ -343,10 +340,11 @@ template <typename T> __h__ void NumCuda<T>::construct_from_pyarray(PyArrayObjec
             PyErr_SetString(PyExc_ValueError, "cudaMalloc error");
             throw;
         }
+        if (copyToDevice) CopyHostToDevice();
     #else
         dd_refcount = NULL;
     #endif
-    if (copyToDevice) CopyHostToDevice(); //this function has its own check GPU-enabled check
+    
 }
 
 //class constructor to create a whole new array
@@ -384,8 +382,8 @@ template <typename T> __h__ NumCuda<T>::NumCuda(int d0, int d1, int d2, int d3, 
         dd_refcount = NULL;
     #endif
 
-    if (typeid(T) == typeid(int)) NpyTypeId = NPY_INT;
-    else if (typeid(T) == typeid(float)) NpyTypeId = NPY_FLOAT;
+    if (typeid(T) == typeid(int32_t)) NpyTypeId = NPY_INT32;
+    else if (typeid(T) == typeid(float)) NpyTypeId = NPY_FLOAT32;
 }
 
 template <typename T> __h__ __d__ NumCuda<T>::~NumCuda(){

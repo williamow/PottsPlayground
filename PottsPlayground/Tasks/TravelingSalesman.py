@@ -25,11 +25,7 @@ class TravelingSalesman(BaseTask.BaseTask):
 		:type costs: NxN Numpy float
 		"""
 
-		#set up task-specific variables ==========================================
-		self.e_th = -1e14
-		self.ncities = ncities
-		self.nnodes = ncities
-		self.ConstraintFactor = ConstraintFactor
+		#set up task-specific variables =========================================
 
 		if seed is not None:
 			numpy.random.seed(seed)
@@ -44,7 +40,14 @@ class TravelingSalesman(BaseTask.BaseTask):
 					self.distances[i,j] = d
 					self.distances[j,i] = d
 		else:
+			assert costs.shape[0] == costs.shape[1]
 			self.distances = costs #allow an external distance/cost matrix to be used
+			ncities = costs.shape[0]
+
+		self.e_th = -1e14
+		self.ncities = ncities
+		self.nnodes = ncities
+		self.ConstraintFactor = ConstraintFactor
 
 		#create actual Potts formulation of the task =============================
 		#set up partitioning - BaseTask function

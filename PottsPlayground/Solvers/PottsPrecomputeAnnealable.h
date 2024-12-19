@@ -41,7 +41,7 @@ PottsPrecomputeBase::PottsPrecomputeBase(PyObject *task, int nReplicates, bool U
 			}
 		}
 	}
-	sparse_kernels.CopyHostToDevice();
+	if (USE_GPU) sparse_kernels.CopyHostToDevice();
 
 }
 

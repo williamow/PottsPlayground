@@ -55,7 +55,7 @@ PyObject* Anneal(PyObject* self, PyObject* args, PyObject* kwargs) {
         return NULL;
 
     bool USE_GPU = false;
-    if (!strcmp(device_str, "GPU") and GPU_AVAIL) USE_GPU = true;
+    if (!strcmp(device_str, "GPU") && GPU_AVAIL) USE_GPU = true;
     
     //process annealing schedule to get total niters:
     NumCuda<float> PwlSpecs(AnnealSchedule_np, 2, false, false);
@@ -104,8 +104,10 @@ PyObject* Anneal(PyObject* self, PyObject* args, PyObject* kwargs) {
             }
         }
         else printf("The supplied initial conditions does not have the right dimensions, it will be ignored\n");
-        BestStates.CopyHostToDevice();
-        WrkStates.CopyHostToDevice();
+        if (USE_GPU){
+            BestStates.CopyHostToDevice();
+            WrkStates.CopyHostToDevice();
+        }
 
         //add "1" to all of the PWLSpecs here so that default iter=0 state initialization does not overwrite the specified initial condition
 

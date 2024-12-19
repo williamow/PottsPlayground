@@ -6,7 +6,7 @@ Getting Started
 Installation
 ============
 
-A key feaure of PottsPlayground is support for GPU acceleration, however PottsPlayground can compile and run without GPU support as well.  For now, PottsPlayground is available as a source install via ``pip install PottsPlayground``.  If the setup process finds nvcc (the compiler for Nvidia GPU support) PottsPlayground will attempt to build for GPU execution; otherwise, it will build for CPU only.  PottsPlayground prints a GPU status report when imported, which will indicate if it was built with or without GPU support, and whether or not the module can find a GPU to use.
+A key feaure of PottsPlayground is support for GPU acceleration, however PottsPlayground can compile and run without GPU support as well.  For now, PottsPlayground is available as a source install via ``pip install PottsPlayground``.  If the setup process finds nvcc (the compiler for Nvidia GPU support) PottsPlayground will attempt to build for GPU execution; otherwise, it will build for CPU only.  Note that even if nvcc is installed, it might not be on the system path.  PottsPlayground prints a GPU status report when imported, which will indicate if it was built with or without GPU support, and whether or not the module can find a GPU to use.
 
 Using Built-in Tasks
 ====================
