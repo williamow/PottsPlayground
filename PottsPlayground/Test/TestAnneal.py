@@ -19,11 +19,11 @@ for i in range(25):
 	args = {}
 	args['model'] = random.choice(["Potts", "PottsPrecompute", "Tsp"])
 	args['device'] = random.choice(["CPU", "GPU"])
-	args['algo'] = random.choice(["Simple", "BirdsEye", "OptionsActions"])
+	args['algo'] = random.choice(["Simple", "KMC", "ParallelTrials"])
 	args['nReplicates'] = random.choice([1,3,41])
 	args['nWorkers'] = random.choice([1,3,41])
-	args['nActions'] = random.choice([1,2,3]) #only applies if algo=OptionsActions
-	args['nOptions'] = random.choice([1,5,1000]) #only applies if algo=OptionsActions
+	args['nActions'] = random.choice([1,2,3]) #only applies if algo=ParallelTrials
+	args['nOptions'] = random.choice([1,5,1000]) #only applies if algo=ParallelTrials
 
 	results = PottsPlayground.Anneal(PottsTask, solver_temp, **args)
 

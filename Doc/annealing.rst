@@ -100,9 +100,9 @@ algo="Simple" (CPU only)
 ------------------------
 This is the tradtional simulated annealing algorithm, where state changes are proposed, the change in cost dE is evaluated, and then the change is accepted if dE is negative or is accepted with probability exp(-dE/T) otherwise.
 
-algo="OptionsActions"
+algo="ParallelTrials"
 ---------------------
-At each step in the "OptionsActions" algorithm, **nOptions** possilbe spin changes are considered at a time, and up to **nActions** spin updates actually happen.  When **nOptions**=1 and **nActions**=1, it behaves the same as the Simple algorithm.  When **nOptions** is large and **nActions**=1, it behaves similarly to the BirdsEye algorithm, but is less efficient.  By enabling parallel spin updates with **nActions**>1 and varying **nOptions**, this algorithm can trade off computational efficiency and algorithmic efficiency.
+At each step in the "ParallelTrials" algorithm, **nOptions** Metropolis-Hastings trials are conducted and up to **nActions** trials are accepted.  When **nOptions**=1 and **nActions**=1, it behaves the same as the Simple algorithm.  When **nOptions** is large and **nActions**=1, it behaves similarly to the BirdsEye algorithm, but is less efficient.  By enabling parallel spin updates with **nActions**>1 and varying **nOptions**, this algorithm can trade off computational efficiency and algorithmic efficiency.
 
 
 algo="KMC" (CPU only)

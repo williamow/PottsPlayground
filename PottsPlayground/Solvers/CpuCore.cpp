@@ -89,77 +89,77 @@ template <typename Annealable> void OptionsActionsCpu(
 	DA.BestEnergies(replicate_index) = task.lowest_e;
 }
 
-template <typename Annealable> void ParallelTrials(
-	Annealable && task,
-	DispatchArgs &&DA,
-	int replicate_index,
-	volatile int *TaskDone){
+// template <typename Annealable> void ParallelTrials(
+// 	Annealable && task,
+// 	DispatchArgs &&DA,
+// 	int replicate_index,
+// 	volatile int *TaskDone){
 
-	std::mt19937 RngGenerator(replicate_index + DA.MinIter*1000);
-	std::uniform_real_distribution<float> uniform_distribution(0.0,1.0);
+// 	std::mt19937 RngGenerator(replicate_index + DA.MinIter*1000);
+// 	std::uniform_real_distribution<float> uniform_distribution(0.0,1.0);
 
-	int *MiWrk = &DA.WrkStates(replicate_index, 0);
-	int * MiBest = &DA.BestStates(replicate_index, 0);
+// 	int *MiWrk = &DA.WrkStates(replicate_index, 0);
+// 	int * MiBest = &DA.BestStates(replicate_index, 0);
 
-	task.SetIdentity(0, 1, replicate_index, MiWrk, MiBest);
-	task.BeginEpoch(DA.MinIter);
+// 	task.SetIdentity(0, 1, replicate_index, MiWrk, MiBest);
+// 	task.BeginEpoch(DA.MinIter);
 
-	NumCuda<int> flip_flags(DA.nOptions);
-	float offst = 0.0001;
+// 	NumCuda<int> flip_flags(DA.nOptions);
+// 	float offst = 0.0001;
 
-	bool FullParallel = (DA.nOptions >= task.NumActions);
+// 	bool FullParallel = (DA.nOptions >= task.NumActions);
 
-	int iter_inc = 1;
-	if (DA.ParallelUpdates) iter_inc = DA.nActions;
-	for (long iter = DA.MinIter; iter < DA.MaxIter; iter+=iter_inc){
+// 	int iter_inc = 1;
+// 	if (DA.ParallelUpdates) iter_inc = DA.nActions;
+// 	for (long iter = DA.MinIter; iter < DA.MaxIter; iter+=iter_inc){
 
-		if (*TaskDone > 0) break;
+// 		if (*TaskDone > 0) break;
 		
-		float T = DA.PwlTemp.interp(iter);
+// 		float T = DA.PwlTemp.interp(iter);
 
-		int numFlips = 0;
-		for (int i = 0; i < DA.nOptions; i++){
-			int trial = FullParallel ? i : RngGenerator()%task.NumActions;
-			if (trial >= task.NumActions) break;
-			float dE = task.GetActionDE(trial);
-			float prob = offst*exp(-dE/T);
-			if (!strcmp(DA.pMode, "NHPP")) prob = 1 - exp(-prob); //poisson process probability
-			if (prob > uniform_distribution(RngGenerator)){
-				flip_flags(numFlips) = trial;
-				numFlips++;
-				printf("%.2f\n",prob);
-			}
-		}
+// 		int numFlips = 0;
+// 		for (int i = 0; i < DA.nOptions; i++){
+// 			int trial = FullParallel ? i : RngGenerator()%task.NumActions;
+// 			if (trial >= task.NumActions) break;
+// 			float dE = task.GetActionDE(trial);
+// 			float prob = offst*exp(-dE/T);
+// 			if (!strcmp(DA.pMode, "NHPP")) prob = 1 - exp(-prob); //poisson process probability
+// 			if (prob > uniform_distribution(RngGenerator)){
+// 				flip_flags(numFlips) = trial;
+// 				numFlips++;
+// 				printf("%.2f\n",prob);
+// 			}
+// 		}
 
-		//feedback loop to adjust DE offset, so that numFlips matches the target.
-		//uses cumulative target/actual so that it ajusts faster at first and slower towards the end
-		// offst = offst*((iter+1)/(DA.RealFlips(replicate_index)+1+numFlips));
-		printf("%i iters, %i flips, offst=%.5f\n",iter,numFlips,offst);
-		offst = offst*(0.0 + 1.0*(DA.nActions+1)/(numFlips+1));
+// 		//feedback loop to adjust DE offset, so that numFlips matches the target.
+// 		//uses cumulative target/actual so that it ajusts faster at first and slower towards the end
+// 		// offst = offst*((iter+1)/(DA.RealFlips(replicate_index)+1+numFlips));
+// 		printf("%i iters, %i flips, offst=%.5f\n",iter,numFlips,offst);
+// 		offst = offst*(0.0 + 1.0*(DA.nActions+1)/(numFlips+1));
 
-		if (numFlips == 0) continue;
+// 		if (numFlips == 0) continue;
 
-		if (!DA.ParallelUpdates){ //if serial only updates, select only one action to take
-			int action = floor(uniform_distribution(RngGenerator)*numFlips);
-			action = flip_flags(action);
-			flip_flags(0) = action;
-			numFlips = 1;
-		}
+// 		if (!DA.ParallelUpdates){ //if serial only updates, select only one action to take
+// 			int action = floor(uniform_distribution(RngGenerator)*numFlips);
+// 			action = flip_flags(action);
+// 			flip_flags(0) = action;
+// 			numFlips = 1;
+// 		}
 
-		for (int i = 0; i < numFlips; i++){
-			int action = flip_flags(i);
-			task.TakeAction_tic(action);
-			DA.RealFlips(replicate_index)++;
-			task.TakeAction_toc(action);
-		}
-		task.check_energy();
+// 		for (int i = 0; i < numFlips; i++){
+// 			int action = flip_flags(i);
+// 			task.TakeAction_tic(action);
+// 			DA.RealFlips(replicate_index)++;
+// 			task.TakeAction_toc(action);
+// 		}
+// 		task.check_energy();
 
-	}
+// 	}
 
-	task.FinishEpoch();
-	DA.WrkEnergies(replicate_index) = task.current_e;
-	DA.BestEnergies(replicate_index) = task.lowest_e;
-}
+// 	task.FinishEpoch();
+// 	DA.WrkEnergies(replicate_index) = task.current_e;
+// 	DA.BestEnergies(replicate_index) = task.lowest_e;
+// }
 
 template <typename Annealable> void KmcCpu(
 	//kinetic monte carlo, previously called BirdsEye.
@@ -342,10 +342,7 @@ template <typename Annealable> void CpuDispatch(void* void_task, DispatchArgs &D
 	int thread_num = 0;
 	while (thread_num < nReplicates){
 		if (workers.size() < nWorkers){
-			if (!strcmp(DA.algo, "ParallelTrials"))
-				workers.push_back(std::thread(ParallelTrials<Annealable>, task, DA, thread_num, DA.GlobalHalt.hd));
-			
-			else if (!strcmp(DA.algo, "OptionsActions")) //KMC is new term
+			if (!strcmp(DA.algo, "OptionsActions") || !strcmp(DA.algo, "ParallelTrials")) //KMC is new term
 				workers.push_back(std::thread(OptionsActionsCpu<Annealable>, task, DA, thread_num, DA.GlobalHalt.hd));
 			
 			else if (!strcmp(DA.algo, "BirdsEye") || !strcmp(DA.algo, "KMC")) //KMC is new term
