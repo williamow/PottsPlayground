@@ -8,7 +8,7 @@
 #include "Annealables.h" 
 
 //these need to be included, as this file functions as the compiler entry point for them
-#include "TspAnnealable.h"
+#include "SwapAnnealable.h"
 #include "IsingAnnealable.h"
 #include "IsingPrecomputeAnnealable.h"
 #include "PottsJitAnnealable.h"
@@ -23,7 +23,7 @@ bool GetGpuAvailability(){
 template class NumCuda<int>;
 template class NumCuda<float>;
 
-DispatchFunc* GpuTspDispatch = NULL;
+DispatchFunc* GpuSwapDispatch = NULL;
 DispatchFunc* GpuIsingDispatch = NULL;
 DispatchFunc* GpuIsingPrecomputeDispatch = NULL;
 DispatchFunc* GpuPottsJitDispatch = NULL;

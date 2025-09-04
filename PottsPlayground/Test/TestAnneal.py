@@ -7,17 +7,19 @@ print("Testing: PottsPlayground.Anneal")
 
 #====================================================================================================
 #test set 1: check that minimum TSP energy can be found:
-PottsTask = PottsPlayground.Tasks.TravelingSalesman(ncities=5, ConstraintFactor=1.5)
+PottsTask = PottsPlayground.Tasks.TravelingSalesman(ncities=6, ConstraintFactor=1.5)
 
 valid_energies, invalid_energies = PottsTask.EnergyBands()
 optE = numpy.min(valid_energies)
 
-solver_temp = PottsPlayground.Schedules.SawtoothTempLog2Space(temp=1., MinTemp=0.05, nTeeth=3, niters=1e4)
+solver_temp = PottsPlayground.Schedules.SawtoothTempLog2Space(temp=1., MinTemp=0.05, nTeeth=10, niters=1e4)
+
+numpy.set_printoptions(precision=2, suppress=True)
 
 #randomly check a number of operating combinations, 
-for i in range(25):
+for i in range(50):
 	args = {}
-	args['model'] = random.choice(["Potts", "PottsPrecompute", "Tsp"])
+	args['model'] = random.choice(["Potts", "PottsPrecompute", "Swap", "Swap+"])
 	args['device'] = random.choice(["CPU", "GPU"])
 	args['algo'] = random.choice(["Simple", "KMC", "ParallelTrials"])
 	args['nReplicates'] = random.choice([1,3,41])
@@ -28,14 +30,17 @@ for i in range(25):
 	results = PottsPlayground.Anneal(PottsTask, solver_temp, **args)
 
 	if results["MinEnergies"][-1] > optE*1.001 or results["MinEnergies"][-1] < optE*0.999:
-		print("FAILURE: did not return expected optimal result, settings =")
+		print("	FAILURE: did not return expected optimal result, settings =")
 		print(args)
 		exit()
+	elif (args['nReplicates'] > 20):
+		#print annealing performance info
+		print("	Performance Info: model-%s, algo-%s"%(args['model'], args['algo']), results["AvgMinEnergies"][::2])
 
 
 #=======================================================================================================
 #test 2: that initial conditions set correctly:
-print("testing setting initial conditions, expect two warnings:")
+print("	testing setting initial conditions, expect two warnings:")
 PottsTask = PottsPlayground.Tasks.TravelingSalesman(ncities=5, ConstraintFactor=1.5)
 temp = PottsPlayground.Schedules.LinearTemp(temp=1, niters=0)
 for device in ['CPU', 'GPU']:
