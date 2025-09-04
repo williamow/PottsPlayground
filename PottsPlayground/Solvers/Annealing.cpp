@@ -144,20 +144,14 @@ PyObject* Anneal(PyObject* self, PyObject* args, PyObject* kwargs) {
     else if (!strcmp(model_str, "Swap+"))
         task_cpp = new SwapAnnealable(task, USE_GPU, true);
 
-    // else if (!strcmp(model_str, "Tsp-extended"))
-    //     task_cpp = new TspAnnealable(task, USE_GPU, true);
-
     else if (!strcmp(model_str, "Ising"))
         task_cpp = new IsingAnnealable(task, USE_GPU);
 
     else if (!strcmp(model_str, "IsingPrecompute"))
         task_cpp = new IsingPrecomputeAnnealable(task, nReplicates, USE_GPU);
 
-    // else if (!strcmp(model_str, "Ising-NHPP"))
-    //     task_cpp = new IsingAnnealable(task, USE_GPU, true);
-
     else {
-        printf("Error: requested model not recognized\n");
+        printf("Error: requested model \"%s\" not recognized\n", model_str);
         task_cpp = NULL;
     }
 
