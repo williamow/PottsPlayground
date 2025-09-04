@@ -4,7 +4,7 @@
 
 
 //=====================================================================================constructor methods
-TspAnnealable::TspAnnealable(PyObject *task, bool USE_GPU, bool extended_actions){
+SwapAnnealable::SwapAnnealable(PyObject *task, bool USE_GPU){
 	distances = NumCuda<float>(task, "distances", 2, false, USE_GPU);
 
 	nCities = distances.dims[0];
@@ -12,16 +12,17 @@ TspAnnealable::TspAnnealable(PyObject *task, bool USE_GPU, bool extended_actions
 
 	
 	//in addition to swapping two cities, can also flip entire segments of a tour.
-	if (extended_actions) NumActions = nCities*nCities*2;
-	//swapping two cities:  nCities options for the first city, nCities options for the second.
-	else NumActions = nCities*nCities;
+	// if (extended_actions) NumActions = nCities*nCities*2;
+	// //swapping two cities:  nCities options for the first city, nCities options for the second.
+	// else 
+	NumActions = nCities*nCities;
 
-	if (USE_GPU) dispatch = GpuTspDispatch;
-    else         dispatch = CpuTspDispatch;
+	if (USE_GPU) dispatch = GpuSwapDispatch;
+    else         dispatch = CpuSwapDispatch;
 
 }
 
-void TspAnnealable::InitializeState(NumCuda<int> BestStates, NumCuda<int> WrkStates){
+void SwapAnnealable::InitializeState(NumCuda<int> BestStates, NumCuda<int> WrkStates){
 	
 	int nReplicates = BestStates.dims[0];
 	for (int replicate = 0; replicate < nReplicates; replicate++){
@@ -32,18 +33,7 @@ void TspAnnealable::InitializeState(NumCuda<int> BestStates, NumCuda<int> WrkSta
 	}
 }
 
-// __host__ __device__ float TspAnnealable::TotalDistance(int * state){
-// 	float e = 0;
-// 	for (int city = 0; city < nCities; city++)
-//     	e += distances(state[city], state[(city+1)%nCities]);
-//     return e;
-// }
-
-__h__ __d__ void TspAnnealable::BeginEpoch(int iter){
-
-	// if (iter==0){
-		
-	// }
+__h__ __d__ void SwapAnnealable::BeginEpoch(int iter){
 
 	//intialize total energies to reflect the states that were just passed
 	current_e = 0;
@@ -55,13 +45,13 @@ __h__ __d__ void TspAnnealable::BeginEpoch(int iter){
 }
 
 
-__h__ __d__ void TspAnnealable::FinishEpoch(){
+__h__ __d__ void SwapAnnealable::FinishEpoch(){
 	
 }
 
 // ===================================================================================annealing methods
 //how much the total energy will change if this action is taken
-__h__ __d__ float TspAnnealable::GetActionDE(int action_num){
+__h__ __d__ float SwapAnnealable::GetActionDE(int action_num){
 	int action_type = action_num/(nCities*nCities);
 	action_num = action_num%(nCities*nCities);
 	int pos1 = action_num%nCities;
@@ -121,12 +111,12 @@ __h__ __d__ float TspAnnealable::GetActionDE(int action_num){
 } 
 
 //changes internal state to reflect the annealing step that was taken
-__h__ __d__ void TspAnnealable::TakeAction_tic(int action_num){
+__h__ __d__ void SwapAnnealable::TakeAction_tic(int action_num){
     current_e += GetActionDE(action_num);
     // if (current_e < lowest_e) lowest_e = current_e;
 }
 
-__h__ __d__ void TspAnnealable::TakeAction_toc(int action_num){
+__h__ __d__ void SwapAnnealable::TakeAction_toc(int action_num){
 	if (action_num < 0) return;
 	if (Thrd != 0) return; //no parallel processing enabled in this step
 

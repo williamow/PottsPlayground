@@ -11,7 +11,7 @@
 #include "PieceWiseLinear.h"
 
 #include "Annealables.h"
-#include "TspAnnealable.h"
+#include "SwapAnnealable.h"
 #include "IsingAnnealable.h"
 #include "IsingPrecomputeAnnealable.h"
 #include "PottsJitAnnealable.h"
@@ -168,7 +168,7 @@ template <typename Annealable> void GpuDispatch(void* void_task, DispatchArgs &D
 	DA.RealFlips.CopyDeviceToHost();
 }
 
-DispatchFunc* GpuTspDispatch = GpuDispatch<TspAnnealable>;
+DispatchFunc* GpuSwapDispatch = GpuDispatch<SwapAnnealable>;
 DispatchFunc* GpuIsingDispatch = GpuDispatch<IsingAnnealable>;
 DispatchFunc* GpuIsingPrecomputeDispatch = GpuDispatch<IsingPrecomputeAnnealable>;
 DispatchFunc* GpuPottsJitDispatch = GpuDispatch<PottsJitAnnealable>;

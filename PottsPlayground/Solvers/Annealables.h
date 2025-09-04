@@ -77,7 +77,7 @@ public:
 
 	__h__ virtual void InitializeState(NumCuda<int> BestStates, NumCuda<int> WrkStates){
 		//dumb default initialization works for most Annealables, but not all.
-		//For instance TspAnnealable has special requirements, and has an overriding function.
+		//For instance SwapAnnealable has special requirements, and has an overriding function.
 		int nPartitions = BestStates.dims[1];
 		int nReplicates = BestStates.dims[0];
 		for (int replicate = 0; replicate < nReplicates; replicate++){
@@ -196,14 +196,14 @@ public:
 	__h__ __d__ float GetActionDE(int action_num);
 };
 
-extern DispatchFunc* GpuTspDispatch;
-extern DispatchFunc* CpuTspDispatch;
-class TspAnnealable: public Annealable {
+extern DispatchFunc* GpuSwapDispatch;
+extern DispatchFunc* CpuSwapDispatch;
+class SwapAnnealable: public Annealable {
 private:
 	int nCities;
 	NumCuda<float> distances;
 public:
-	__h__ TspAnnealable(PyObject *task, bool USE_GPU, bool extended_actions);
+	__h__ SwapAnnealable(PyObject *task, bool USE_GPU);
 	__h__ void InitializeState(NumCuda<int> BestStates, NumCuda<int> WrkStates) override;
 	__h__ __d__ void BeginEpoch(int iter);
 	__h__ __d__ void FinishEpoch();

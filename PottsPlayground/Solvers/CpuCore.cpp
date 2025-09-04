@@ -134,7 +134,7 @@ template <typename Annealable> void ParallelTrials(
 		//feedback loop to adjust DE offset, so that numFlips matches the target.
 		//uses cumulative target/actual so that it ajusts faster at first and slower towards the end
 		// offst = offst*((iter+1)/(DA.RealFlips(replicate_index)+1+numFlips));
-		printf("%i iters, %i flips, offst=%.5f\n",iter,numFlips,offst);
+		printf("%li iters, %i flips, offst=%.5f\n",iter,numFlips,offst);
 		offst = offst*(0.0 + 1.0*(DA.nActions+1)/(numFlips+1));
 
 		if (numFlips == 0) continue;
@@ -371,7 +371,7 @@ template <typename Annealable> void CpuDispatch(void* void_task, DispatchArgs &D
 	}
 }
 
-DispatchFunc* CpuTspDispatch = CpuDispatch<TspAnnealable>;
+DispatchFunc* CpuSwapDispatch = CpuDispatch<SwapAnnealable>;
 DispatchFunc* CpuIsingDispatch = CpuDispatch<IsingAnnealable>;
 DispatchFunc* CpuIsingPrecomputeDispatch = CpuDispatch<IsingPrecomputeAnnealable>;
 DispatchFunc* CpuPottsJitDispatch = CpuDispatch<PottsJitAnnealable>;
