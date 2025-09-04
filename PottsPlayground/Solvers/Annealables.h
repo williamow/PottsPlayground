@@ -131,7 +131,7 @@ public:
 extern DispatchFunc* GpuPottsJitDispatch;
 extern DispatchFunc* CpuPottsJitDispatch;
 class PottsJitAnnealable: public Annealable {
-private:
+protected:
 	NumCuda<float> kmap;
 	NumCuda<int> qSizes;
 	NumCuda<int> partitions;
@@ -198,15 +198,23 @@ public:
 
 extern DispatchFunc* GpuSwapDispatch;
 extern DispatchFunc* CpuSwapDispatch;
-class SwapAnnealable: public Annealable {
+class SwapAnnealable: public PottsJitAnnealable {
 private:
-	int nCities;
-	NumCuda<float> distances;
+	NumCuda<int> qCumulative;
+	int spin1_newq;
+	int spin2_newq;
+// 	NumCuda<float> kmap;
+// 	NumCuda<int> qSizes;
+// 	NumCuda<int> partitions;
+// 	NumCuda<int> partition_states;
+// 	NumCuda<float> kernels;
+// 	NumCuda<float> biases;
 public:
-	__h__ SwapAnnealable(PyObject *task, bool USE_GPU);
+	__h__ SwapAnnealable(PyObject *task, bool USE_GPU, bool extended_actions);
+	// __h__ __d__ float EnergyOfState(int* state);
 	__h__ void InitializeState(NumCuda<int> BestStates, NumCuda<int> WrkStates) override;
-	__h__ __d__ void BeginEpoch(int iter);
-	__h__ __d__ void FinishEpoch();
+	// __h__ __d__ void BeginEpoch(int iter);
+	// __h__ __d__ void FinishEpoch();
 	__h__ __d__ float GetActionDE(int action_num);
 	__h__ __d__ void TakeAction_tic(int action_num);
 	__h__ __d__ void TakeAction_toc(int action_num);

@@ -309,7 +309,7 @@ template <typename T> __h__ NumCuda<T>::NumCuda(PyObject* obj, const char* name,
     if (typeid(T) == typeid(int32_t)) NpyTypeId = NPY_INT32;
     else if (typeid(T) == typeid(float)) NpyTypeId = NPY_FLOAT32;
     if (PyArray_TYPE(source) != NpyTypeId){
-        printf("Expected Numpy array \"%s\" to have type %i, but recieved %i\n", name, NpyTypeId, PyArray_TYPE(source));
+        printf("Expected Numpy array \"%s\" to have type %li, but recieved %li\n", name, NpyTypeId, PyArray_TYPE(source));
         throw;
     }
 

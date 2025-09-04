@@ -34,14 +34,6 @@ __h__ __d__ float PottsJitAnnealable::EnergyOfState(int* state){
 }
 
 __h__ __d__ void PottsJitAnnealable::BeginEpoch(int iter){
-
-	// if (iter==0){
-	// 	for (int partition = 0; partition < nPartitions; partition++){
-    //         MiWrk[partition] = partition%qSizes(partition); //a really shitty pseudorandom initialization
-    //         MiBest[partition] = MiWrk[partition];
-    //     }
-	// }
-	//intialize total energies to reflect the states that were just passed
 	current_e = EnergyOfState(MiWrk);
     lowest_e = EnergyOfState(MiBest);
 }
@@ -78,9 +70,6 @@ __h__ __d__ float PottsJitAnnealable::GetActionDE(int action_num){
 
 //changes internal state to reflect the annealing step that was taken
 __h__ __d__ void PottsJitAnnealable::TakeAction_tic(int action_num){
-	// int action_partition = partitions(action_num);
-	// int action_Mi = partition_states(action_num);
-
     current_e += GetActionDE(action_num);
 }
 

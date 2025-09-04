@@ -139,7 +139,10 @@ PyObject* Anneal(PyObject* self, PyObject* args, PyObject* kwargs) {
         task_cpp = new PottsPrecomputePEAnnealable(task, nReplicates, USE_GPU);
         
     else if (!strcmp(model_str, "Tsp") || !strcmp(model_str, "Swap"))
-        task_cpp = new SwapAnnealable(task, USE_GPU);
+        task_cpp = new SwapAnnealable(task, USE_GPU, false);
+
+    else if (!strcmp(model_str, "Swap+"))
+        task_cpp = new SwapAnnealable(task, USE_GPU, true);
 
     // else if (!strcmp(model_str, "Tsp-extended"))
     //     task_cpp = new TspAnnealable(task, USE_GPU, true);

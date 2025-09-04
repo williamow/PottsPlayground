@@ -2,20 +2,33 @@
 #include <random>
 #include "Annealables.h"
 
+//A potts model, but each update action consists of swapping two spin values.
+//Identical to the old Tsp model for Tsp problems, but can now apply to other tasks.
+//Okay, but what does it mean to swap if not an NxN problem?
+//Can let it be messy: swap any two spins, regardless of dimension, etc.
+//should there also be a generate option? Like, regular potts model, plus swapping capability.
+//However that would not be exactly like the orignal tsp, which would be problematic. Ugh.
+//Maybe... would require a redefinition of some problems.
+//Like, for Placement: invert the logical/physical lut arrangement. 1000 spins, 400 values each.
+//The weight matrix would be ... gah.  Not worth spending time on.  I mean, could do it, but...
 
 //=====================================================================================constructor methods
-SwapAnnealable::SwapAnnealable(PyObject *task, bool USE_GPU){
-	distances = NumCuda<float>(task, "distances", 2, false, USE_GPU);
-
-	nCities = distances.dims[0];
-	nPartitions = nCities;
-
+SwapAnnealable::SwapAnnealable(PyObject *task, bool USE_GPU, bool extended_actions) : PottsJitAnnealable(task, USE_GPU) {
 	
-	//in addition to swapping two cities, can also flip entire segments of a tour.
-	// if (extended_actions) NumActions = nCities*nCities*2;
-	// //swapping two cities:  nCities options for the first city, nCities options for the second.
-	// else 
-	NumActions = nCities*nCities;
+	// qSizes = 			NumCuda<int>(task, "qSizes", 1, false, USE_GPU);
+	qCumulative = 		NumCuda<int>(task, "qCumulative", 1, false, USE_GPU);
+	// partitions = 		NumCuda<int>(task, "Partitions", 1, false, USE_GPU);
+	// partition_states = 	NumCuda<int>(task, "Partition_states", 1, false, USE_GPU);
+	// kmap = 				NumCuda<float>(task, "kmap_sparse", 3, false, USE_GPU);
+	// kernels = 			NumCuda<float>(task, "kernels", 3, false, USE_GPU);
+	// biases = 			NumCuda<float>(task, "biases", 2, false, USE_GPU);
+
+	// nPartitions = qSizes.dims[0];
+	// nNHPPs = qSizes.sum();
+	if (extended_actions)
+		NumActions = nNHPPs + nPartitions*nPartitions; //swapping and regular Potts updates
+	else
+		NumActions = nPartitions*nPartitions; //swapping only
 
 	if (USE_GPU) dispatch = GpuSwapDispatch;
     else         dispatch = CpuSwapDispatch;
@@ -26,146 +39,105 @@ void SwapAnnealable::InitializeState(NumCuda<int> BestStates, NumCuda<int> WrkSt
 	
 	int nReplicates = BestStates.dims[0];
 	for (int replicate = 0; replicate < nReplicates; replicate++){
-		for (int city = 0; city < nCities; city++){
-	        BestStates(replicate, city) = city;
-	        WrkStates(replicate, city) = city;
+		for (int spin = 0; spin < nPartitions; spin++){
+	        BestStates(replicate, spin) = spin%qSizes(spin);
+	        WrkStates(replicate, spin) = spin%qSizes(spin);
 	    }
 	}
 }
 
-__h__ __d__ void SwapAnnealable::BeginEpoch(int iter){
+// __h__ __d__ float SwapAnnealable::EnergyOfState(int* state){
+// 	float e = 0;
+//     for (int i = 0; i < nPartitions; i++){
+//     	e += 2*biases(i, state[i]);
+//     	for (int c = 1; c < kmap(i,0,0); c++){
+//     		int j = kmap(i,c,2); //index of the connected Potts node
+//     		float w = kmap(i,c,1); //scalar multiplier
+//     		int k = kmap(i,c,0); //which kernel
+//     		e += w*kernels(k, state[i], state[j]);
+//     	}
+//     }
+//     return e/2;
+// }
 
-	//intialize total energies to reflect the states that were just passed
-	current_e = 0;
-    lowest_e = 0;
-    for (int city = 0; city < nCities; city++){
-    	current_e += distances(MiWrk[city], MiWrk[(city+1)%nCities]);
-    	lowest_e +=  distances(MiBest[city], MiBest[(city+1)%nCities]);
-    }
-}
+// __h__ __d__ void SwapAnnealable::BeginEpoch(int iter){
+// 	current_e = EnergyOfState(MiWrk);
+//     lowest_e = EnergyOfState(MiBest);
+// }
 
 
-__h__ __d__ void SwapAnnealable::FinishEpoch(){
+// __h__ __d__ void SwapAnnealable::FinishEpoch(){
 	
-}
+// }
 
 // ===================================================================================annealing methods
 //how much the total energy will change if this action is taken
 __h__ __d__ float SwapAnnealable::GetActionDE(int action_num){
-	int action_type = action_num/(nCities*nCities);
-	action_num = action_num%(nCities*nCities);
-	int pos1 = action_num%nCities;
-	int pos2 = action_num/nCities;
-
-	//re-order, so pos2 is always greater than pos 1:
-	if (pos2 == pos1) return 0;
-	else if (pos2 < pos1){
-		int temp = pos2;
-		pos2 = pos1;
-		pos1 = temp;
+	if (action_num >= nPartitions*nPartitions){
+		//extended action, i.e. regular PottsJit edit
+		action_num = action_num - nPartitions*nPartitions;
+		return PottsJitAnnealable::GetActionDE(action_num);
 	}
-	if (pos2 == nCities-1 && pos1==0) return 0; //just don't allow this.
+	else{
+		//swap action:
+		int spin1 = action_num%nPartitions;
+		int spin2 = action_num/nPartitions;
 
-	int city1 = MiWrk[pos1];
-	int city2 = MiWrk[pos2];
+		//essentially, two simultaneous Potts spin updates:
+		int spin1_newq = MiWrk[spin2]%qSizes(spin1); //modulo for overflow protection
+		int spin2_newq = MiWrk[spin1]%qSizes(spin2); //modulo for overflow protection
 
-	//for modulo protection
-	pos1 += nCities;
-	pos2 += nCities;
+		int fake_action_1 = qCumulative(spin1)-qSizes(spin1)+spin1_newq;
+		float dE = PottsJitAnnealable::GetActionDE(fake_action_1);
+		
+		//now, must add to DE to account for the second spin flip:
+		dE += biases(spin2, spin2_newq) - biases(spin2, MiWrk[spin2]);
 
-	int city1_left = MiWrk[(pos1-1)%nCities];
-	int city1_right = MiWrk[(pos1+1)%nCities];
-	int city2_left = MiWrk[(pos2-1)%nCities];
-	int city2_right = MiWrk[(pos2+1)%nCities];
+		for (int c = 1; c < kmap(spin2,0,0); c++){
+			int j = kmap(spin2,c,2); //index of the connected Potts node
+			float w = kmap(spin2,c,1); //scalar multiplier
+			int k = kmap(spin2,c,0); //which kernel
+			int mj = MiWrk[j];
+			if (j == spin1) //must take into account spin1's flip
+				mj = spin1_newq;
+			dE += w*kernels(k, spin2_newq, mj);
+			dE -= w*kernels(k, MiWrk[spin2], mj);
+		}
 
-	//in this case action type 0 and 1 are the same,
-	//and the normal type 0 dE calculation is erroneous, so we use the type 1 dE calculation
-	if (pos2-pos1 == 1 || pos2-pos1 == nCities-1) action_type = 1; 
-	float dE = 0;
-
-	// if action_type is 0, then just swap cities; if 1, then reverse a segment
-	if (action_type == 0){
-		dE += distances(city2, city1_left);
-		dE += distances(city2, city1_right);
-
-		dE += distances(city1, city2_left);
-		dE += distances(city1, city2_right);
-
-		dE -= distances(city2, city2_left);
-		dE -= distances(city2, city2_right);
-
-		dE -= distances(city1, city1_left);
-		dE -= distances(city1, city1_right);
-
-	} else if (action_type == 1){
-		//if a segment is reversed, two distances are removed and two new ones are added.
-		//the distances between cities internal to the segment do not change.
-		dE -= distances(city1, city1_left);
-		dE -= distances(city2, city2_right);
-
-		dE += distances(city1, city2_right);
-		dE += distances(city2, city1_left);
+	    return dE;
 	}
-	
-    return dE;
+
 } 
 
 //changes internal state to reflect the annealing step that was taken
 __h__ __d__ void SwapAnnealable::TakeAction_tic(int action_num){
     current_e += GetActionDE(action_num);
-    // if (current_e < lowest_e) lowest_e = current_e;
+
+    if (action_num < nPartitions*nPartitions){
+    	int spin1 = action_num%nPartitions;
+		int spin2 = action_num/nPartitions;
+
+		//hold these values for multi-threading safety
+		spin1_newq = MiWrk[spin2]%qSizes(spin1); //modulo for overflow protection
+		spin2_newq = MiWrk[spin1]%qSizes(spin2); //modulo for overflow protection
+    }
+    
 }
 
 __h__ __d__ void SwapAnnealable::TakeAction_toc(int action_num){
 	if (action_num < 0) return;
-	if (Thrd != 0) return; //no parallel processing enabled in this step
-
-	int action_type = action_num/(nCities*nCities);
-	action_num = action_num%(nCities*nCities);
-	int pos1 = action_num%nCities;
-	int pos2 = action_num/nCities;
-
-	//re-order, so pos2 is always greater than pos 1:
-	if (pos2 == pos1) return; //no action
-	else if (pos2 < pos1){
-		int temp = pos2;
-		pos2 = pos1;
-		pos1 = temp;
+	
+	if (action_num >= nPartitions*nPartitions){
+		//extended action, i.e. regular PottsJit edit
+		action_num = action_num - nPartitions*nPartitions;
+		PottsJitAnnealable::TakeAction_toc(action_num);
 	}
-	if (pos2 == nCities-1 && pos1==0) return; //just don't allow this.
+	else{
+		//swap action:
+		int spin1 = action_num%nPartitions;
+		int spin2 = action_num/nPartitions;
 
-	if (action_type == 0){
-		//swap the two cites
-		int city1 = MiWrk[pos1];
-		int city2 = MiWrk[pos2]; 
-
-		MiWrk[pos2] = city1;
-		MiWrk[pos1] = city2;
+		MiWrk[spin1] = spin1_newq;
+		MiWrk[spin2] = spin2_newq;
 	}
-	else if (action_type == 1){
-		//reverse the segment of cities between and including pos1 and pos2
-		while (pos1 < pos2){
-			int city1 = MiWrk[pos1];
-			int city2 = MiWrk[pos2]; 
-
-			MiWrk[pos2] = city1;
-			MiWrk[pos1] = city2;
-
-			pos1++;
-			pos2--;
-		}
-
-	}
-    // printf("Current: %.2f, Lowest: %.2f\n", current_e, lowest_e);
-    // if (current_e < lowest_e){
-    //     lowest_e = current_e;
-    //     for (int i = 0; i < nCities; i++) MiBest[i] = MiWrk[i];
-    // }
-
-	// current_e = 0;
-    // lowest_e = 0;
-    // for (int city = 0; city < nCities; city++){
-    	// current_e += distances(MiWrk[city], MiWrk[(city+1)%nCities]);
-    	// lowest_e +=  distances(MiBest[city], MiBest[(city+1)%nCities]);
-    // }
 }

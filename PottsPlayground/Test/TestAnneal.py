@@ -17,7 +17,7 @@ solver_temp = PottsPlayground.Schedules.SawtoothTempLog2Space(temp=1., MinTemp=0
 #randomly check a number of operating combinations, 
 for i in range(25):
 	args = {}
-	args['model'] = random.choice(["Potts", "PottsPrecompute", "Tsp"])
+	args['model'] = random.choice(["Potts", "PottsPrecompute", "Swap"])
 	args['device'] = random.choice(["CPU", "GPU"])
 	args['algo'] = random.choice(["Simple", "BirdsEye", "OptionsActions"])
 	args['nReplicates'] = random.choice([1,3,41])
