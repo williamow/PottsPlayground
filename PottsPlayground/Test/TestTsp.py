@@ -30,3 +30,4 @@ if numpy.min(valid_energies) != 4:
 if numpy.max(valid_energies) != 22:
 	print("FAILURE: incorrect max energy")
 	exit()
+

@@ -26,7 +26,7 @@ class TravelingSalesman(BaseTask.BaseTask):
 		"""
 
 		#set up task-specific variables =========================================
-
+		BaseTask.BaseTask.__init__(self)
 		if seed is not None:
 			numpy.random.seed(seed)
 
@@ -53,7 +53,6 @@ class TravelingSalesman(BaseTask.BaseTask):
 		#set up partitioning - BaseTask function
 		self.SetPartitions(numpy.zeros([ncities]) + ncities)
 
-		self.InitKernelManager()
 		for i in range(self.ncities):
 			for j in range(self.ncities):
 				if (i==j):

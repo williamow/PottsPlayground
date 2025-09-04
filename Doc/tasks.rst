@@ -1,5 +1,5 @@
 ==============
-Specific Tasks
+Built-in Tasks
 ==============
 
 
@@ -17,10 +17,4 @@ Traveling Salesman
 .. Ice40 Logic Placement
 .. =====================
 .. .. autoclass:: PottsPlayground.Tasks.Ice40Placer
-..    :members:
-
-
-.. Invertible Logic
-.. ================
-.. .. autoclass:: PottsPlayground.Tasks.InvertibleLogic
 ..    :members:

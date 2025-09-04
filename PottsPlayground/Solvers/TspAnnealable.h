@@ -8,6 +8,7 @@ TspAnnealable::TspAnnealable(PyObject *task, bool USE_GPU, bool extended_actions
 	distances = NumCuda<float>(task, "distances", 2, false, USE_GPU);
 
 	nCities = distances.dims[0];
+	nPartitions = nCities;
 
 	
 	//in addition to swapping two cities, can also flip entire segments of a tour.
@@ -20,6 +21,17 @@ TspAnnealable::TspAnnealable(PyObject *task, bool USE_GPU, bool extended_actions
 
 }
 
+void TspAnnealable::InitializeState(NumCuda<int> BestStates, NumCuda<int> WrkStates){
+	
+	int nReplicates = BestStates.dims[0];
+	for (int replicate = 0; replicate < nReplicates; replicate++){
+		for (int city = 0; city < nCities; city++){
+	        BestStates(replicate, city) = city;
+	        WrkStates(replicate, city) = city;
+	    }
+	}
+}
+
 // __host__ __device__ float TspAnnealable::TotalDistance(int * state){
 // 	float e = 0;
 // 	for (int city = 0; city < nCities; city++)
@@ -29,12 +41,9 @@ TspAnnealable::TspAnnealable(PyObject *task, bool USE_GPU, bool extended_actions
 
 __h__ __d__ void TspAnnealable::BeginEpoch(int iter){
 
-	if (iter==0){
-		for (int city = 0; city < nCities; city++){
-            MiWrk[city] = city;
-            MiBest[city] = MiWrk[city];
-        }
-	}
+	// if (iter==0){
+		
+	// }
 
 	//intialize total energies to reflect the states that were just passed
 	current_e = 0;
@@ -158,10 +167,10 @@ __h__ __d__ void TspAnnealable::TakeAction_toc(int action_num){
 
 	}
     // printf("Current: %.2f, Lowest: %.2f\n", current_e, lowest_e);
-    if (current_e < lowest_e){
-        lowest_e = current_e;
-        for (int i = 0; i < nCities; i++) MiBest[i] = MiWrk[i];
-    }
+    // if (current_e < lowest_e){
+    //     lowest_e = current_e;
+    //     for (int i = 0; i < nCities; i++) MiBest[i] = MiWrk[i];
+    // }
 
 	// current_e = 0;
     // lowest_e = 0;

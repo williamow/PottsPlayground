@@ -5,11 +5,12 @@
 #define __d__
 
 #include "NumCuda.h"
-#include "Annealables.h"
+#include "Annealables.h" 
 
 //these need to be included, as this file functions as the compiler entry point for them
 #include "TspAnnealable.h"
 #include "IsingAnnealable.h"
+#include "IsingPrecomputeAnnealable.h"
 #include "PottsJitAnnealable.h"
 #include "PottsPrecomputeAnnealable.h"
 
@@ -24,6 +25,7 @@ template class NumCuda<float>;
 
 DispatchFunc* GpuTspDispatch = NULL;
 DispatchFunc* GpuIsingDispatch = NULL;
+DispatchFunc* GpuIsingPrecomputeDispatch = NULL;
 DispatchFunc* GpuPottsJitDispatch = NULL;
 DispatchFunc* GpuPottsPrecomputeDispatch = NULL;
 DispatchFunc* GpuPottsPrecomputePEDispatch = NULL;

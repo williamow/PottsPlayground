@@ -1,5 +1,6 @@
 import networkx as nx
 from PottsPlayground.Tasks import BaseTask
+from PottsPlayground.Kernels import BinaryQuadratic as BQK
 import numpy
 
 import dwave.embedding
@@ -23,7 +24,13 @@ class MinorEmbedded(BaseTask.BaseTask):
 		:param ConstraintFactor: Energy penalty for disagreements within each physical chain representing a single logical spin.
 		:type ConstraintFactor: float
 		"""
+		BaseTask.BaseTask.__init__(self)
 		print("Finding embedding.")#this can easily take a very long time, so it is worthwhile to let user know what is up
+		
+
+		# self.source_label_mapping = {original_label: idx for idx, original_label in enumerate(G.nodes())}
+		# self.source_embeddable_graph = nx.relabel_nodes(task.graph, self.source_label_mapping)
+
 		embedding = minorminer.find_embedding(task.graph, target_graph)
 		self.embedding = embedding
 		self.target = target_graph
@@ -45,22 +52,22 @@ class MinorEmbedded(BaseTask.BaseTask):
 		c = 0
 
 		#assume/work with binary quadratic form, with variables having values of 0 or 1.
-		for i in range(task.nnodes):
+		for i, spin in enumerate(task.ListSpins()):
 			h0 = task.biases[i,0]
 			h1 = task.biases[i,1]	
 			#treat h0 as a "background" contribution to the energy,
 			#that should be moved from the local bias and rolled into a global offset
 			h = h1-h0
 			c = c + h0
-			source_h[i] = h
-			for i, j, edge_data in task.graph.out_edges(i, data=True):
-				if (j, i) in source_J:
+			source_h[spin] = h
+			for spin1, spin2, edge_data in task.graph.out_edges(spin, data=True):
+				if (spin2, spin1) in source_J:
 					continue #checks if the transpose weight has already been processed and added to the edge dictionary
 				k = edge_data['kIndex']
 				k = task.KernelList[k]*edge_data['weight']
 				assert (k.shape == (2,2) and k[0,0] == 0. and k[0,1] == 0. and k[1,0] == 0.) #enforce that source is in binary quadratic form
 				wij = k[1,1]
-				source_J[(i,j)] = wij
+				source_J[(spin1, spin2)] = wij
 
 		
 
@@ -74,35 +81,38 @@ class MinorEmbedded(BaseTask.BaseTask):
 
 		qSizes = numpy.array([2]*target_nodes)
 		self.SetPartitions(qSizes)
+		self.nnodes = target_nodes
 
 		#map between the target graph node numbers, and the indices of the MinorEmbedded PottsPlayground task
 		self.Indx2TgtNode = [n for n in emb_h]
 		self.TgtNode2Indx = {tgt:i for i, tgt in enumerate(self.Indx2TgtNode)}
 
-		self.biases = self.biases + emb_c/self.nnodes #redistribute the offset across all the nodes
+		# self.biases = numpy.add(self.biases, emb_c/self.nnodes, dtype="float32") 
 		for i in range(self.nnodes):
 			TgtNode = self.Indx2TgtNode[i]
-			self.biases[i,1] = self.biases[i,1] + emb_h[TgtNode]
+			self.AddBias(i, [emb_c/self.nnodes, emb_c/self.nnodes]) #redistribute the offset across all the nodes
+			self.AddBias(i, [0, emb_h[TgtNode]])
+			# self.biases[i,1] = self.biases[i,1] + emb_h[TgtNode]
 
-		self.InitKernelManager()
+		# self.InitKernelManager()
 
 		for edge in emb_J:
 			i = self.TgtNode2Indx[edge[0]]
 			j = self.TgtNode2Indx[edge[1]]
 			w = emb_J[edge]
-			self.AddKernel(lambda n: self.BQMKernel(n), i, j, weight=w)
-			self.AddKernel(lambda n: self.BQMKernel(n), j, i, weight=w)
+			self.AddWeight(BQK, i, j, weight=w)
+			# self.AddKernel(lambda n: self.BQMKernel(n), j, i, weight=w)
 
 		self.CompileKernels()
 
 
 
-	def BQMKernel(self, n=False):
-		if n:
-			return "ik"
-		k = numpy.zeros([2,2])
-		k[1,1] = 1
-		return k
+	# def BQMKernel(self, n=False):
+	# 	if n:
+	# 		return "ik"
+	# 	k = numpy.zeros([2,2])
+	# 	k[1,1] = 1
+	# 	return k
 
 	def StateToMinor(self, state):
 		"""
@@ -114,12 +124,21 @@ class MinorEmbedded(BaseTask.BaseTask):
 		:return: A vector of spin values, corresponding to spins in the target/physical Ising model.
 		"""
 		minor_state = numpy.zeros([self.nnodes], dtype="int32")
-		for i_src, value in enumerate(state):
-			tgt_nodes = self.embedding[i_src]
-			for tgt_node in tgt_nodes:
+
+		for src_name, embedded_spins in self.embedding.items():
+			src_value = self.task.GetSpinFromState(src_name, state)
+			for tgt_node in embedded_spins:
 				i = self.TgtNode2Indx[tgt_node]
-				minor_state[i] = value
+				minor_state[i] = src_value
 		return minor_state
+
+		# for i_src, value in enumerate(state):
+		# 	print(self.embedding)
+		# 	tgt_nodes = self.embedding[i_src]
+		# 	for tgt_node in tgt_nodes:
+		# 		i = self.TgtNode2Indx[tgt_node]
+		# 		minor_state[i] = value
+		# return minor_state
 
 
 	def FuzzyMinorToState(self, minor_state):

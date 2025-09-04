@@ -12,6 +12,7 @@
 //my includes:
 #include "NumCuda.h"
 #include "PieceWiseLinear.h"
+#include "Cores.h"
 
 //__host__ and __device__ tell nvcc which functions are to be compiled for cpu/gpu respectively.
 //however C++ compilers know nothing of this, so this does some of our own preprocessing so cpu-only compilation is possible.
@@ -26,15 +27,17 @@
 //defines format of the dispatch functions, for creating function pointers more easily
 using DispatchFunc = void(
 		void*, //the task, which must be specified as a void pointer since the actual type changes but I want an unchanging function interface
-		NumCuda<int> &, NumCuda<int> &, //working states, best states
-		NumCuda<float> &, NumCuda<float> &, //working energies, best energies
-		NumCuda<float> &, //communal space memory for interthread cooperation
-		NumCuda<int> &, //For returning the total number of actual flips
-		PieceWiseLinear, int, int, int, //annealing temperature specification, nOptions, nActions, nWorkers
-		long, long, //min iter, max iter
-		float, //termination threshold energy
-		NumCuda<int> &//global halt
-		);
+		DispatchArgs &);
+
+		// NumCuda<int> &, NumCuda<int> &, //working states, best states
+		// NumCuda<float> &, NumCuda<float> &, //working energies, best energies
+		// NumCuda<float> &, //communal space memory for interthread cooperation
+		// NumCuda<int> &, //For returning the total number of actual flips
+		// PieceWiseLinear, int, int, int, //annealing temperature specification, nOptions, nActions, nWorkers
+		// long, long, //min iter, max iter
+		// float, //termination threshold energy
+		// NumCuda<int> &//global halt
+		// );
 
 class Annealable{ //full definition of parent class; not a fully functional object, just helps to define some of the data fields
 public:
@@ -53,12 +56,36 @@ public:
 	int Thrd = 0; //index of this thread within the thread group
 	int Rep;
 
+	//for pre-compute behavior.  Not functional, but allows all annealables to compile:
+	int nRecentUpdates = -1;
+	int* recentUpdates;
+
 	__h__ __d__ void SetIdentity(int thread_num, int total_threads, int replicate_, int* WrkState_, int* BestState_){
 		Thrd = thread_num;
 		nThrds = total_threads;
 		Rep = replicate_;
 		MiBest = BestState_;
 		MiWrk = WrkState_;
+	}
+
+	__h__ __d__ void check_energy(){
+		if (current_e < lowest_e){
+        	lowest_e = current_e;
+        	for (int i = 0; i < nPartitions; i++) MiBest[i] = MiWrk[i];
+    	}
+	}
+
+	__h__ virtual void InitializeState(NumCuda<int> BestStates, NumCuda<int> WrkStates){
+		//dumb default initialization works for most Annealables, but not all.
+		//For instance TspAnnealable has special requirements, and has an overriding function.
+		int nPartitions = BestStates.dims[1];
+		int nReplicates = BestStates.dims[0];
+		for (int replicate = 0; replicate < nReplicates; replicate++){
+			for (int partition = 0; partition < nPartitions; partition++){
+	            BestStates(replicate, partition) = 0;
+	            WrkStates(replicate, partition) = 0;
+	        }
+	    }
 	}
 
 	DispatchFunc* dispatch;
@@ -80,6 +107,26 @@ public:
 	__h__ __d__ void TakeAction_tic(int action_num);
 	__h__ __d__ void TakeAction_toc(int action_num);
 };
+
+extern DispatchFunc* GpuIsingPrecomputeDispatch;
+extern DispatchFunc* CpuIsingPrecomputeDispatch;
+class IsingPrecomputeAnnealable: public Annealable {
+private:
+	NumCuda<float> kmap;
+	NumCuda<float> biases;
+	int Mi_proposed_holder;
+	NumCuda<double> NHPP_potentials;
+	NumCuda<int> UpdateIndices;
+public:
+	__h__ IsingPrecomputeAnnealable(PyObject* task, int nReplicates, bool USE_GPU);
+	__h__ __d__ float EnergyOfState(int* state);
+	__h__ __d__ void BeginEpoch(int iter);
+	__h__ __d__ void FinishEpoch();
+	__h__ __d__ float GetActionDE(int action_num);
+	__h__ __d__ void TakeAction_tic(int action_num);
+	__h__ __d__ void TakeAction_toc(int action_num);
+};
+
 
 extern DispatchFunc* GpuPottsJitDispatch;
 extern DispatchFunc* CpuPottsJitDispatch;
@@ -114,6 +161,7 @@ private:
 	NumCuda<float> dense_kernels;
 	NumCuda<float> sparse_kernels;
 	NumCuda<double> NHPP_potentials;
+	NumCuda<int> UpdateTracker;
 	NumCuda<float> biases;
 	int old_Mi; //for passing data from tic phase to toc phase
 public:
@@ -156,6 +204,7 @@ private:
 	NumCuda<float> distances;
 public:
 	__h__ TspAnnealable(PyObject *task, bool USE_GPU, bool extended_actions);
+	__h__ void InitializeState(NumCuda<int> BestStates, NumCuda<int> WrkStates) override;
 	__h__ __d__ void BeginEpoch(int iter);
 	__h__ __d__ void FinishEpoch();
 	__h__ __d__ float GetActionDE(int action_num);

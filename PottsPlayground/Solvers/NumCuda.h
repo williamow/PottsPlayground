@@ -1,6 +1,29 @@
 #ifndef NumCudaHeader
 #define NumCudaHeader
 
+//the NumCuda header also handles complex initialization of the Numpy API,
+//which only works after import_array() initializes the PyArray_API symbol.
+//To have one initialization across multiple compiled cpp files, we can redefine the PyArray_API like so:
+#define PY_ARRAY_UNIQUE_SYMBOL PottsPlayground_PyArray_API 
+
+#ifndef INIT_NUMPY_ARRAY_CPP 
+    //for all but one of the cpp files in the project,
+    //the redefined PyArray_API will be extern if we make this statement:
+    #define NO_IMPORT_ARRAY
+#endif
+//for the remaining cpp file that defines INIT_NUMPY_ARRAY_CPP,
+//PottsPlayground_PyArray_API will be initialized when that file calls import_array().
+
+//these are configs for the numpy/ndarrayobject.h header,
+//so none of the cpp files in the project should directly include numpy/ndarrayobject.h.
+
+//previously I tried just calling import_array() separately in each file, which worked on Linux,
+//but caused dll import initialization error on windows.
+
+//For additional reference, see:
+//https://stackoverflow.com/questions/47026900/pyarray-check-gives-segmentation-fault-with-cython-c
+
+
 #define PY_SSIZE_T_CLEAN //why? not sure.
 #define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION //makes old API unavailable, and supresses API depreciation warning
 #include <Python.h>
@@ -119,30 +142,15 @@ public:
     __h__ __d__ NumCuda(){
         hd_refcount = NULL;
         dd_refcount = NULL; //since no memory is allocated here
+        ndims = -1;
     }
 
-	//class constructor to create a NumCuda from an existing Numpy object
-	__h__ NumCuda(PyArrayObject* source, int ndims_, bool CopyToHost, bool copyToDevice){
-        construct_from_pyarray(source, ndims_, CopyToHost, copyToDevice);
-    }
-
-    //extracts numpy array from a python dictionary or class object first:
-    __h__ NumCuda(PyObject* obj, const char* name, int ndims_, bool CopyToHost, bool copyToDevice){
-        PyArrayObject* source;
-        if(PyDict_Check(obj)){
-            //dictionary retrieval:
-            if (!PyDict_Contains(obj, PyUnicode_FromString(name))) printf("Error, object does not have attribute %s\n", name);
-            source = (PyArrayObject*)PyDict_GetItemString(obj, name);
-        }
-        else{
-            if (!PyObject_HasAttr(obj, PyUnicode_FromString(name))) printf("Error, object does not have attribute %s\n", name);
-            source = (PyArrayObject*)PyObject_GetAttr(obj, PyUnicode_FromString(name));
-        }
-        construct_from_pyarray(source, ndims_, CopyToHost, copyToDevice);
-    }
-
-
-    __h__ void construct_from_pyarray(PyArrayObject* source, int ndims_, bool CopyToHost, bool copyToDevice);
+    //class constructor to create a NumCuda from an existing Numpy object.
+    //If the passed object is a dict or python object,
+    //attempt to extract a Numpy array from the dict/object using the given name as a keyword.
+    //name is required even if a Numpy array is directly given, so that if there are any errors,
+    //the specific numpy array can be cited - since the Python user might give us garbage in need of debugging.
+    __h__ NumCuda(PyObject* obj, const char* name, int ndims_, bool CopyToHost, bool copyToDevice);
 
     // ========================================================================================= SYNCHRONIZATION FUNCTIONS
 	__h__ void CopyHostToDevice();
@@ -168,49 +176,39 @@ public:
     }
 
     // ========================================================================================================== ARRAY ACCESS
-    __h__ __d__ inline T& operator ()(int indx1){
+    __h__ __d__ T* DeviceData(){
+        //switch between host and device data
         #ifdef __CUDA_ARCH__
-            // printf("Here\n");
-            return dd[indx1];
+            return dd;
         #else
-            // printf("There\n");
-            return hd[indx1];
+            return hd;
         #endif
+    }
+
+    __h__ __d__ inline T& operator ()(int indx1){
+        T* data = DeviceData();
+        return data[indx1];
     }
 
     __h__ __d__ inline T& operator ()(int indx1, int indx2){
-        #ifdef __CUDA_ARCH__
-            return dd[indx1*dims[1] + indx2];
-        #else
-            return hd[indx1*dims[1] + indx2];
-        #endif
+        T* data = DeviceData();
+        return data[indx1*dims[1] + indx2];
     }
 
     __h__ __d__ inline T& operator ()(int indx1, int indx2, int indx3){
-        #ifdef __CUDA_ARCH__
-            return dd[indx1*dims[1]*dims[2] + indx2*dims[2] + indx3];
-        #else
-            return hd[indx1*dims[1]*dims[2] + indx2*dims[2] + indx3];
-        #endif
+        T* data = DeviceData();
+        return data[indx1*dims[1]*dims[2] + indx2*dims[2] + indx3];
     }
 
     __h__ __d__ inline T& operator ()(int indx1, int indx2, int indx3, int indx4){
-        #ifdef __CUDA_ARCH__
-            return dd[indx1*dims[1]*dims[2]*dims[3] + indx2*dims[2]*dims[3] + indx3*dims[3] + indx4];
-        #else
-            return hd[indx1*dims[1]*dims[2]*dims[3] + indx2*dims[2]*dims[3] + indx3*dims[3] + indx4];
-        #endif
+        T* data = DeviceData();
+        return data[indx1*dims[1]*dims[2]*dims[3] + indx2*dims[2]*dims[3] + indx3*dims[3] + indx4];
     }
 
     // ===================================================================================================== MATH OPERATIONS
     __h__ __d__ int ArgMin(){
         //returns the index of the minimum value, without indexing
-        T * data;
-        #ifdef __CUDA_ARCH__
-            data =  dd;
-        #else
-            data = hd;
-        #endif
+        T* data = DeviceData();
         T min = data[0];
         int min_index = 0;
         for (int i = 0; i<nElements; i++){
@@ -224,12 +222,7 @@ public:
 
     __h__ __d__ T min(){
         //returns the minimum value
-        T * data;
-        #ifdef __CUDA_ARCH__
-            data =  dd;
-        #else
-            data = hd;
-        #endif
+        T* data = DeviceData();
         T min = data[0];
         for (int i = 0; i<nElements; i++){
             if (data[i] < min) {
@@ -240,18 +233,16 @@ public:
     }
 
     __h__ __d__ float mean(){
-        float m = sum();
+        T* data = DeviceData();
+        double m = 0;
+        for (int i = 0; i<nElements; i++)
+            m += data[i];
         return m/nElements;
     }
 
     __h__ __d__ T sum(){
         //returns the minimum value
-        T * data;
-        #ifdef __CUDA_ARCH__
-            data =  dd;
-        #else
-            data = hd;
-        #endif
+        T* data = DeviceData();
         T m = 0;
         // printf("nElements: %i\n", nElements);
         for (int i = 0; i<nElements; i++)
@@ -292,12 +283,25 @@ template <typename T> __h__ void NumCuda<T>::CopyDeviceToHost(){
     #endif
 }
 
-template <typename T> __h__ void NumCuda<T>::construct_from_pyarray(PyArrayObject* source, int ndims_, bool CopyToHost, bool copyToDevice){
+template <typename T> __h__ NumCuda<T>::NumCuda(PyObject* obj, const char* name, int ndims_, bool CopyToHost, bool copyToDevice){
+    
+    PyArrayObject* source;
+    if (PyArray_Check(obj))
+        source = (PyArrayObject*)obj;
+    else if(PyDict_Check(obj) && PyDict_Contains(obj, PyUnicode_FromString(name)))
+        source = (PyArrayObject*)PyDict_GetItemString(obj, name);
+    else if (PyObject_HasAttr(obj, PyUnicode_FromString(name)))
+        source = (PyArrayObject*)PyObject_GetAttr(obj, PyUnicode_FromString(name));
+    else
+        printf("Could not initialize NumCuda array named \"%s\".  \
+            \nThe provided python object needs to be a numpy array, \
+            \nor a dict/object with a key/attribute named \"%s\" that is a numpy array.\n", name, name);
+
+    //dimension checking, if applicable.
     if (ndims_ < 0) ndims_ = PyArray_NDIM(source);
     ndims = ndims_;
     if (PyArray_NDIM(source) != ndims){
-        printf("Numpy array should have %i dimensions, not %i\n", ndims, PyArray_NDIM(source));
-        PyErr_SetString(PyExc_ValueError, "Number of array dimensions is not expected");
+        printf("Expected Numpy array \"%s\" to have %i dimensions, but recieved %i\n", name, ndims, PyArray_NDIM(source));
         throw;
     }
 
@@ -305,7 +309,7 @@ template <typename T> __h__ void NumCuda<T>::construct_from_pyarray(PyArrayObjec
     if (typeid(T) == typeid(int32_t)) NpyTypeId = NPY_INT32;
     else if (typeid(T) == typeid(float)) NpyTypeId = NPY_FLOAT32;
     if (PyArray_TYPE(source) != NpyTypeId){
-        printf("A Numpy array type does not match required C object type\n");
+        printf("Expected Numpy array \"%s\" to have type %i, but recieved %i\n", name, NpyTypeId, PyArray_TYPE(source));
         throw;
     }
 
@@ -343,8 +347,7 @@ template <typename T> __h__ void NumCuda<T>::construct_from_pyarray(PyArrayObjec
         if (copyToDevice) CopyHostToDevice();
     #else
         dd_refcount = NULL;
-    #endif
-    
+    #endif  
 }
 
 //class constructor to create a whole new array

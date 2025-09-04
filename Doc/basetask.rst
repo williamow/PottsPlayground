@@ -1,6 +1,6 @@
-=========
-Base Task
-=========
+=======================
+Potts Model Constructor
+=======================
 
-.. autoclass:: PottsPlayground.Tasks.BaseTask
+.. autoclass:: PottsPlayground.PottsModel
    :members:

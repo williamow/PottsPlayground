@@ -7,6 +7,8 @@ from PottsPlayground.Tasks.GraphColoring import GraphColoring
 import math
 import time
 import pickle
+import copy
+from collections import defaultdict
 
 def GetCellPortNetName(cell, name):
 	if cell.ports[name].net is not None:
@@ -20,73 +22,279 @@ def RecurseDownCarryChain(ctx, cell):
 		if nn is None:
 			return [cell] #last cell in the carry chain
 		net = ctx.nets[nn]
-		# print(len(net.users))
-		# for user in net.users:
-			# print(user.cell.name) #ugh. some cell has two users listed, but it's the same cell, twice.
-		# assert len(net.users) == 1 #the carry output should only go to a single carry input
 		return [cell] + RecurseDownCarryChain(ctx, net.users[0].cell)
 
+# def DffFlavor(cell):
+
+LcInpCounts = {}
+# DffFlavors = set()
+# FlavorNums = {}
 def DffIncompatible(cell1, cell2):
+	#the DFFs in each tile share several inputs, which must be the same within each tile:
+	# for cell in [cell1, cell2]:
+		# if cell.name not in DffFlavors:
 	if (cell1.params['DFF_ENABLE']=='1') and (cell2.params['DFF_ENABLE']=='1'):
 		if ((GetCellPortNetName(cell1, 'CEN') != GetCellPortNetName(cell2, 'CEN')) or
 			(GetCellPortNetName(cell1, 'CLK') != GetCellPortNetName(cell2, 'CLK')) or
 			(GetCellPortNetName(cell1, 'SR')  != GetCellPortNetName(cell2, 'SR'))  or
 			(cell1.params['NEG_CLK'] != cell2.params['NEG_CLK'])):
 				return True
+	
+	#there is also a limit that no more than 32 local input signals can be used across all 8 luts.
+	#I can't enforce that directly with pairwise constraints,
+	#but if we ensure that each pair has no more than 8 in total,
+	#the 32-input limit will be met.
+	for cell in [cell1, cell2]:
+		if cell.name not in LcInpCounts:
+			count = 0
+			for name, port in cell.ports:
+				if port.net is None:
+					continue
+				if port.net.driver.cell.name == cell.name:
+					continue #i.e. ignore outputs
+				if port.net.driver.cell.type == 'SB_GB':
+					continue #global signals don't count towards the total
+				count = count + 1
+			LcInpCounts[cell.name] = count
+	
+	if LcInpCounts[cell1.name] + LcInpCounts[cell2.name] > 8:
+		return True
+
 	return False
 
-def FollowArcs(ctx, G, cell_name, ArcsBefore=0, names_before=[]):
-	#graph G contains connectivity information.
-	#this function adds attributes to the edges of G to approximate timing criticality.
-	#ArcsAfter should be the maximum number of Arcs after the Dest node before the next Dff.
-	#should be zero if the next node is a Dff.
-	#similarly, attribute ArcsBefore keeps track in the other direction.
-	#ArcsBefore+ArcsAfter+1 is the total number of routes between two DFFs.
-	#names_before is to prevent against infinite recursion.
-	if cell_name in names_before:
-		print("Hit an infinite recursion! oops!")
-		for name in names_before:
-			cell = ctx.cells[name]
-			print(name, cell.params['DFF_ENABLE'])
-			# print
-			# for edge in G.edges(name, data=True):
-				# print(edge)
-		exit()
-		return 0
-	else:
-		names_before.append(cell_name)
+def old_timing_paths(ctx):
+	LC_in_ports = ["I0", "I1", "I2", "I3", "CIN"]
 
-	MaxArcsAfter = 0
-	for u, v, data in G.edges(cell_name, data=True):
-		if data["d2u"] == False or data["src"] != cell_name:
+	#first, create directed graph where each node is a net,
+	#and edges are non-dff cells between nets.
+	G = nx.DiGraph()
+	for key, net in ctx.nets:
+		G.add_node(net.name, depth=1)
+
+	for key, cell in ctx.cells:
+		if cell.type != "ICESTORM_LC":
+			continue #timing only for logic cells
+
+		input_net_names = [(port, GetCellPortNetName(cell, port)) for port in LC_in_ports]
+		input_net_names = [info for info in input_net_names if info[1] != None]
+
+		output_net_names = []
+		if cell.params['DFF_ENABLE'] == "0" and GetCellPortNetName(cell, 'O') is not None:
+			output_net_names.append(('O', GetCellPortNetName(cell, 'O')))
+		if GetCellPortNetName(cell, 'COUT') is not None:
+			output_net_names.append(('COUT', GetCellPortNetName(cell, 'COUT')))
+
+		for inp in input_net_names:
+			for out in output_net_names:
+				w = 0.1 if (inp[0] == 'CIN' and out == 'COUT') else 1.
+				#carry connections are automatically very fast,
+				#so should not be fully counted towards timing arc length
+				G.add_edge(inp[1], out[1], weight=w)
+
+	#delete two special nets that nextpnr uses:
+	for special_node in ["$PACKER_VCC_NET", "$PACKER_GND_NET"]:
+		if special_node in G:
+			G.remove_node(special_node)
+
+	# print(sorted(nx.simple_cycles(G)))
+	assert len(sorted(nx.simple_cycles(G))) == 0
+
+	#to figure out how important each net is to timing, traverse the graph
+	#forwards and backwards, adding up the lengths each way.
+	#after adding up, nodes in G_forward will know how the maximum depth
+	#of nets before them, and G_reverse will know the maximum depth after.
+	#adding the two gives the length of the longest pathway that passes through each net.
+	#To make sure that each net really knows its maximum before or after length,
+	#graph edges are deleted as they are followed and edges are only followed once all the 
+	#preceding edges have been processed and deleted.
+	G_forward = copy.deepcopy(G)
+	G_reverse = copy.deepcopy(G)
+
+	while (G_forward.number_of_edges() > 0):
+		# print(G_forward.number_of_edges())
+		for net in G_forward.nodes:
+			if len(G_forward.in_edges(net)) == 0:
+				to_remove = []
+				for u, v, edge_data in G_forward.out_edges(net, data=True):
+					G_forward.nodes[v]['depth'] = max(G_forward.nodes[v]['depth'], G_forward.nodes[u]['depth']+edge_data['weight'])
+					# print(G.nodes[v]['depth'], G.nodes[u]['depth'], edge_data['weight'])
+					to_remove.append((u, v))
+				G_forward.remove_edges_from(to_remove)
+
+	while (G_reverse.number_of_edges() > 0):
+		# print(G_reverse.number_of_edges(), G_reverse.number_of_nodes())
+		for net in G_reverse.nodes:
+			if len(G_reverse.out_edges(net)) == 0:
+				to_remove = []
+				for u, v, edge_data in G_reverse.in_edges(net, data=True):
+					G_reverse.nodes[u]['depth'] = max(G_reverse.nodes[u]['depth'], G_reverse.nodes[v]['depth']+edge_data['weight'])
+					to_remove.append((u, v))
+				G_reverse.remove_edges_from(to_remove)
+
+	#combine forward and reverse counts:
+	arc_lengths = defaultdict(lambda:1)
+	for net in G.nodes:
+		# print(G_reverse[net], G_forward[net])
+		combined = G_reverse.nodes[net]['depth'] + G_forward.nodes[net]['depth'] - 1
+		arc_lengths[net] = combined
+
+	return arc_lengths
+
+def timing_paths(ctx):
+	LC_in_ports = ["I0", "I1", "I2", "I3", "CIN"]
+	LC_out_ports = ["COUT", "LO"]
+	ignore_nets = ["$PACKER_VCC_NET", "$PACKER_GND_NET"] #two special nets that nextpnr uses
+
+	#first, create directed graph where each node is an arc,
+	#and edges are non-dff cells between arcs.
+	G = nx.DiGraph()
+	arc_lookup = defaultdict(list)
+	for key, net in ctx.nets:
+		if net in ignore_nets or net.driver.cell is None:
 			continue
 
-		if "ArcsAfter" in data and data["ArcsBefore"] >= ArcsBefore:
-			#this arc has already been followed, and we don't need to follow it again:
-			if data["ArcsAfter"] > MaxArcsAfter:
-				MaxArcsAfter = data["ArcsAfter"]
+		for user in net.users:
+			arc = (net.driver.cell.name, user.cell.name)
+			G.add_node(arc, depth=1)
+			arc_lookup[net.name].append(arc)
+			
+	
+		
+	for key, cell in ctx.cells:
+		if cell.type != "ICESTORM_LC":
+			continue #timing only for logic cells
+
+		input_net_names = [(port, GetCellPortNetName(cell, port)) for port in LC_in_ports]
+		input_net_names = [info for info in input_net_names if info[1] != None]
+
+		output_net_names = [(port, GetCellPortNetName(cell, port)) for port in LC_out_ports]
+		output_net_names = [info for info in output_net_names if info[1] != None]
+
+		if cell.params['DFF_ENABLE'] == "0" and GetCellPortNetName(cell, 'O') is not None:
+			output_net_names.append(('O', GetCellPortNetName(cell, 'O')))
+
+
+		for inp in input_net_names:
+			for out in output_net_names:
+				if inp[1] in ignore_nets or out[1] in ignore_nets:
+					continue
+				w = 0.1 if (inp[0] == 'CIN' and out[0] == 'COUT') else 1.
+				#carry connections are automatically very fast,
+				#so should not be fully counted towards timing arc length
+				for inp_arc in arc_lookup[inp[1]]:
+					for out_arc in arc_lookup[out[1]]:
+						G.add_edge(inp_arc, out_arc, weight=w)
+
+
+	for cycle in nx.simple_cycles(G):
+		print("Error, there is as least one combinatorial loop.")
+		print("Arcs in loop:", cycle)
+		#This might arise from packing LUTs into carry chains.  
+		#Since two logical cells effectively occupy one phyiscal cell,
+		#it can sometimes look as though a logical pathway feeds back onto itself,
+		#when in fact the signal is going to the other logical cell located in the same physical cell.
+		exit()
+
+	assert len(sorted(nx.simple_cycles(G))) == 0
+
+	#to figure out how important each net is to timing, traverse the graph
+	#forwards and backwards, adding up the lengths each way.
+	#after adding up, nodes in G_forward will know how the maximum depth
+	#of nets before them, and G_reverse will know the maximum depth after.
+	#adding the two gives the length of the longest pathway that passes through each net.
+	#To make sure that each net really knows its maximum before or after length,
+	#graph edges are deleted as they are followed and edges are only followed once all the 
+	#preceding edges have been processed and deleted.
+	G_forward = copy.deepcopy(G)
+	G_reverse = copy.deepcopy(G)
+
+	while (G_forward.number_of_edges() > 0):
+		# print(G_forward.number_of_edges())
+		for arc in G_forward.nodes:
+			if len(G_forward.in_edges(arc)) == 0:
+				to_remove = []
+				for u, v, edge_data in G_forward.out_edges(arc, data=True):
+					G_forward.nodes[v]['depth'] = max(G_forward.nodes[v]['depth'], G_forward.nodes[u]['depth']+edge_data['weight'])
+					# print(G.nodes[v]['depth'], G.nodes[u]['depth'], edge_data['weight'])
+					to_remove.append((u, v))
+				G_forward.remove_edges_from(to_remove)
+
+	while (G_reverse.number_of_edges() > 0):
+		# print(G_reverse.number_of_edges(), G_reverse.number_of_nodes())
+		for arc in G_reverse.nodes:
+			if len(G_reverse.out_edges(arc)) == 0:
+				to_remove = []
+				for u, v, edge_data in G_reverse.in_edges(arc, data=True):
+					G_reverse.nodes[u]['depth'] = max(G_reverse.nodes[u]['depth'], G_reverse.nodes[v]['depth']+edge_data['weight'])
+					to_remove.append((u, v))
+				G_reverse.remove_edges_from(to_remove)
+
+	#combine forward and reverse counts:
+	arc_lengths = defaultdict(lambda:1)
+	for arc in G.nodes:
+		# print(G_reverse[net], G_forward[net])
+		combined = G_reverse.nodes[arc]['depth'] + G_forward.nodes[arc]['depth'] - 1
+		arc_lengths[arc] = combined
+
+	return arc_lengths
+
+def label_carry_chains(ctx):
+	cc_lookup = {} #lookup has a flat structure, i.e. all chain cells at top level regardless of what chain they belong to
+	for key, cell in ctx.cells:
+		if cell.type == "ICESTORM_LC" and GetCellPortNetName(cell, 'COUT') is not None and GetCellPortNetName(cell, 'CIN') is None:
+			#then this is the start of a chain!
+			chain = RecurseDownCarryChain(ctx, cell)
+			for i, chain_cell in enumerate(chain):
+				#re-type cells to indicate they are in a carry chain, and if they are root or not.
+				#also store carry chain cells into a dict, for looking up their info more easily
+				if i == 0:
+					chain_cell.type = "CC"
+					cc_lookup[chain_cell.name] = len(chain) #for knowing how many tiles will be used
+				else:
+					chain_cell.type = "CCchild"
+					cc_lookup[chain_cell.name] = (chain[0], i) #for extracting root cell placement after annealing
+	return cc_lookup
+
+def label_lc_subtypes(ctx):
+	for i, (key, cell) in enumerate(ctx.cells):
+		if cell.type != "ICESTORM_LC":
+			continue
+		if "BEL" in cell.attrs:
+			bel = cell.attrs["BEL"]
+			loc = ctx.getBelLocation(bel)
+			# cell.setAttr("type", "LC%i"%loc.z)
+			cell.type = "LC%i"%loc.z
 		else:
-			if "ArcsBefore" in data and data["ArcsBefore"] < ArcsBefore or "ArcsBefore" not in data:
-				data["ArcsBefore"] = ArcsBefore
-			dest_cell = ctx.cells[data["dest"]]
-			if 'DFF_ENABLE' not in dest_cell.params:
-				# print(dest_cell.name, "does not have a DFF enable option")
-				data["ArcsAfter"] = 0
-				continue #not a logic cell.  Consider as a dead end.
-			if dest_cell.params['DFF_ENABLE'] == "1" and GetCellPortNetName(dest_cell, 'COUT') is None:
-				#a cell can have a dff enabled, but still have a non-clocked output via cout or lout
-				
-				data["ArcsAfter"] = 0
-			elif dest_cell.params['DFF_ENABLE'] == "1" and GetCellPortNetName(dest_cell, 'COUT') is not None:
-				print("Both conditions met!")
-			else:
-				data["ArcsAfter"] = FollowArcs(ctx, G, data["dest"], ArcsBefore=ArcsBefore+1, names_before=names_before)
-				if data["ArcsAfter"] > MaxArcsAfter:
-					MaxArcsAfter = data["ArcsAfter"]
-	names_before.remove(cell_name)
+			# cell.setAttr("type", "LC%i"%(i%8))
+			cell.type = "LC%i"%(i%8)
+		# print(cell.type)
 
-	return MaxArcsAfter + 1
+def gather_bel_types(ctx, restrict):
+	BelTypes = defaultdict(list)
+	
+	if type(restrict) == tuple or type(restrict) == list:
+		xlim = restrict[0]
+		ylim = restrict[1]
+	elif restrict is not None:
+		xlim = restrict
+		ylim = restrict
 
+	for bel in ctx.getBels():
+		bel_type = ctx.getBelType(bel)
+		if restrict is not None:
+			loc = ctx.getBelLocation(bel)
+			if loc.x > xlim or loc.y > ylim:
+				continue
+		BelTypes[bel_type].append(bel)
+
+	for i, bel in enumerate(BelTypes['ICESTORM_LC']):
+		loc = ctx.getBelLocation(bel)
+		BelTypes["LC%i"%(loc.z)].append(bel)
+
+	BelTypes['CC'] = BelTypes['LC0'] #artificial mapping, so code below can apply more uniformly
+
+	# print(BelTypes)
+	return BelTypes
 
 
 class Ice40Placer(BaseTask.BaseTask):
@@ -95,7 +303,7 @@ class Ice40Placer(BaseTask.BaseTask):
 	is not 100% functional, but can be used to place many FPGA designs.  Supports LUTs, carry chains, and IO.
 	"""
 
-	def __init__(self, ctx, cost_balancing=(15, 0.5, 1, 0), split_cells=True, verbose=False):
+	def __init__(self, ctx, cost_balancing=(15, 0.5, 1, 0), split_cells=True, verbose=False, restrict=None):
 		"""
 		Creates a model of FPGA placement given a NextPNR context.  The context is available when running a Python script inside of
 		the NextPNR tool.  The context includes both information about the specific FPGA (availability and locations of physical Basic ELements i.e. BELs)
@@ -112,186 +320,109 @@ class Ice40Placer(BaseTask.BaseTask):
 		each logical LUT is pre-constrained to one of the eight LUT positions.  This reduces the optimization space for faster results.
 		:type split_cells: boolean
 		:type verbose: boolean
+		:param restrict: Limits placement of logic cells to tiles with x < restrict, y < restrict.
+		:type restrict: int
 		"""
 
 		#======================================================construct friendlier formats of the design specifications
 		#get lists of bel types in the architecture:
+		BaseTask.BaseTask.__init__(self)
 		exclusion_factor = cost_balancing[0]
 		w_wirelen = cost_balancing[1]
 		w_timing = cost_balancing[2]
 		w_jogs = cost_balancing[3]
 
-		self.e_th = -1e14
-		self.exclusion_factor = exclusion_factor
-		self.BelTypes = {}
-		self.GetBelType = {} #replicate ctx functionality, so that I can easily, temporarily keep track of articial bel type changes
-		for bel in ctx.getBels():
-			bel_type = ctx.getBelType(bel)
-			self.GetBelType[bel] = bel_type
-			if bel_type in self.BelTypes:
-				self.BelTypes[bel_type].append(bel)
-			else:
-				self.BelTypes[bel_type] = [bel]
+		arc_timing_info = timing_paths(ctx)
+		# arc_lengths = [value for key, value in arc_timing_info.items()]
+		# print("arc lengths", numpy.unique(arc_lengths, return_counts=True))
+		# longest_arc = numpy.max(arc_lengths)
 
-		self.CellTypes = {}
-		self.GetCellType = {}
-		for key, cell in ctx.cells:
-			self.GetCellType[cell.name] = cell.type
-			if cell.type in self.CellTypes:
-				self.CellTypes[cell.type].append(cell.name)
-			else:
-				self.CellTypes[cell.type] = [cell.name]
+		# for arc in arc_timing_info:
+		# 	print(arc, arc_timing_info[arc])
+		# exit()
+		# print("Longest arc", longest_arc)
 
-		G = nx.Graph()
-		for key, net in ctx.nets:
-			if (net.driver.cell is None or net.driver.cell.type == "SB_GB"):
-				#net from a global buffer to cells should not contribute in the distance matrix, since a GB distributes a signal evenly
-				continue;
-			# print(net.name, len(net.users))
-			for dest in net.users:
-				# if net.driver.cell.name != dest.cell.name: #not sure why I need to exclude like this, but here it is
-				G.add_edge(net.driver.cell.name, dest.cell.name, w=len(net.users), d2u=True, src=net.driver.cell.name, dest=dest.cell.name)
-				for dest2 in net.users:
-					if not G.has_edge(dest2.cell.name, dest.cell.name):
-						# print("Edge already exists: ", G[dest2.cell.name][dest.cell.name])
-					# else:
-						G.add_edge(dest2.cell.name, dest.cell.name, w=len(net.users), d2u=False) #the more users on a net, the less each individual distance is weighed
+		self.cc_lookup = label_carry_chains(ctx)
+
+
+		#filter timing arcs - remove mentions of carry chain child cells
+		for arc in list(arc_timing_info.keys()):
+			src_cell = arc[0]
+			if ctx.cells[src_cell].type == "CCchild":
+				src_cell = self.cc_lookup[src_cell][0].name
+
+			dest_cell = arc[1]
+			if ctx.cells[dest_cell].type == "CCchild":
+				dest_cell = self.cc_lookup[dest_cell][0].name
+
+			if src_cell == dest_cell:
+				del arc_timing_info[arc]
+
+			elif src_cell != arc[0] or dest_cell != arc[1]:
+				arc_timing_info[(src_cell, dest_cell)] = arc_timing_info[arc]
+				del arc_timing_info[arc]
+
 
 		
+		#this always also generates split LC categories, but we don't always use them
+		self.BelTypes = gather_bel_types(ctx, restrict)
 
-		#======================================================================  split lut cells into subcategories.
-		#========================= first, carry chains need to be pulled out and turned into a new type of "cell":
 
-
-		#Find the start of carry chains and follow them to collect all carry chain cells together
-		self.chains = {}
-		for i, cell_name in enumerate(self.CellTypes['ICESTORM_LC']):
-			cell = ctx.cells[cell_name]
-			if GetCellPortNetName(cell, 'COUT') is not None and GetCellPortNetName(cell, 'CIN') is None:
-				#then this is the start of a chain!
-				chain = RecurseDownCarryChain(ctx, cell)
-				# print("Carry chain len =", len(chain))
-				chain = [cell.name for cell in chain]
-				self.chains[chain[0]] = chain
-				
-		#need to remove the chain cells from the list of logic cells.
-		self.CellTypes["CC"] = [] #CC, for carry chains
-		for chain_start in self.chains:
-			chain = self.chains[chain_start]
-			for cell_name in chain:
-				self.CellTypes['ICESTORM_LC'].remove(cell_name)
-			#instead of storing the whole chain, just keep the name of the first cell.
-			#Why? by having a name instead of a list, code machinery lower down will still work,
-			#and by using the name of the first cell, we can easily find the whole carry chain again later.
-			self.CellTypes['CC'].append(chain_start)
-			self.GetCellType[chain_start] = 'CC'
-			#in the edge connectivity graph, merge all of the chain cells into one:
-			for cell_name in chain[1:]:
-				#manually merge each cell into the root cell, so that the edge attributes can be correctly accounted for
-				for u, v, data in G.edges(cell_name, data=True):
-					if u != cell_name:
-						print("Guess that's not the right order")
-					if v == chain_start:
-						continue #don't need self loops
-					if data["d2u"] or not G.has_edge(chain_start, v):
-						if data['d2u'] and data['src'] == cell_name:
-							data['src'] = chain_start
-						elif data['d2u'] and data['dest'] == cell_name:
-							data['dest'] = chain_start
-						G.add_edge(chain_start, v, **data)
-						# G[chain_start][v] = data
-				G.remove_node(cell_name)
-
-		#build timing arc stuff into the graph:
-		for node in G:
-			FollowArcs(ctx, G, node)
-
-		self.G = G
-
-		# next, the remaining logic cells need to be colored by what logic cell index (within each tile) they will be constrained to.
-		#this should significantly reduce the size of the problem, and speed up computation, without significantly limiting the minimum.
 		if split_cells:
-			self.SplitCellsBySlot(ctx)
-		self.SplitBelsBySlot(ctx)
-		self.BelTypes['CC'] = self.BelTypes['LC0'] #artificial mapping, so code below can apply more uniformly
+			label_lc_subtypes(ctx)
+			del self.BelTypes['ICESTORM_LC']
+
+		
 			
 
-		if verbose:
-			for ty in self.CellTypes:
-				print(ty, len(self.CellTypes[ty]))
+		#subdivide global buffer bels based on even-oddness, since they have slightly different features
+		wire_names = [ctx.getBelPinWire(bel, "GLOBAL_BUFFER_OUTPUT") for bel in self.BelTypes["SB_GB"]]
+		net_nums = [int(wire_name[-1]) for wire_name in wire_names]
+		even_global_buffers = [i for i, netnum in enumerate(net_nums) if netnum%2 == 0]
+		odd_global_buffers =  [i for i, netnum in enumerate(net_nums) if netnum%2 == 1]
+
+		#if an IO cell is unset, only use index zero cells (they come in pairs):
+		usable_SB_IO = [i for i, sb_io_bel in enumerate(self.BelTypes['SB_IO']) if sb_io_bel.endswith("io0")]
+
+		#get a sub-list of logic blocks that are not at the top,
+		#i.e. ones that are not limited to length-8 carry chains
+		bel_loc = [ctx.getBelLocation(bel) for bel in self.BelTypes['CC']]
+		bel_y = [loc.y for loc in bel_loc]
+		ymax = numpy.max(bel_y)
+		constrain2lowerY = [i for i, y in enumerate(bel_y) if y != ymax]
 		
 		#======================================================= partition construction
-		qSizes = []
-		self.Partitions2CellNames = []
-		self.CellNames2Partitions = {}
-		for CellType in self.CellTypes:
-			qSize = len(self.BelTypes[CellType])
-			for cell_name in self.CellTypes[CellType]:
-				self.Partitions2CellNames.append(cell_name)
-				self.CellNames2Partitions[cell_name] = len(self.Partitions2CellNames) - 1
-				qSizes.append(qSize)
-				# print(CellType, cell_name)
-		nPartitions = len(qSizes)
-		self.SetPartitions(numpy.array(qSizes))
+		# self.used_bels = []
+		for key, cell in ctx.cells:
+			if cell.type == "CCchild":
+				continue #these are not explicitly included in the optimization
 
-		#iterate through cells again, assigning biases to indicate that a cell has previously been assigned a fixed position:
-		self.used_bels = []
-		self.biases = numpy.zeros([nPartitions, numpy.max(qSizes)], dtype="float32")
-		for i, cell_name in enumerate(self.Partitions2CellNames):
-			cell = ctx.cells[cell_name]
-			cell_type = self.GetCellType[cell_name]
+			self.AddSpins([len(self.BelTypes[cell.type])], [cell.name], [self.BelTypes[cell.type]])
+
+			# not all global buffers can drive all signal types.
+			# Must restrict certain global buffer cells to a subset of physical global buffers:
+			if cell.type == "SB_GB":
+				users = cell.ports["GLOBAL_BUFFER_OUTPUT"].net.users
+				user_ports = [user.port for user in users]
+				if "CEN" in user_ports:
+					self.PinSpin(cell.name, odd_global_buffers)
+				elif "SR" in user_ports:
+					self.PinSpin(cell.name, even_global_buffers)
+
+			if cell.type == "CC":
+				self.PinSpin(cell.name, constrain2lowerY)
+
+			if cell.type == "SB_IO":
+				self.PinSpin(cell.name, usable_SB_IO)
+
+			#if a cell has already been fixed for some reason (like IO),
+			#fix it in the Potts model here too.
+			#do it last, since PinSpin is an override
 			if "BEL" in cell.attrs:
 				bel = cell.attrs["BEL"]
-				self.used_bels.append(bel)
-				bel_list = self.BelTypes[cell_type]
-				bel_position = bel_list.index(bel)
-				self.biases[i,:] = 100 #all non-selected positions get a large penalty
-				self.biases[i, bel_position] = 0
-
-		#assign biases to some global buffer cells,
-		#since there are limits to which global buffers can be used for reset and enable signals:
-		def drivesPins(gb_cell, pin_name):
-			users = cell.ports["GLOBAL_BUFFER_OUTPUT"].net.users
-			user_ports = [user.port for user in users]
-			return pin_name in user_ports
-
-		#make bias vectors to constrain a global buffer cell to either even or odd global buffer bels
-		constrain2even = numpy.zeros([len(self.BelTypes["SB_GB"])]) + 1e6
-		constrain2odd = numpy.zeros([len(self.BelTypes["SB_GB"])]) + 1e6
-		for i, bel in enumerate(self.BelTypes["SB_GB"]):
-			wire_name = ctx.getBelPinWire(bel, "GLOBAL_BUFFER_OUTPUT")#[2];
-			# print(wire_name) 
-			netnum = int(wire_name[-1])
-			if netnum%2 == 0:
-				constrain2even[i] = 0
-			else:
-				constrain2odd[i] = 0
-
-		for i, cell_name in enumerate(self.CellTypes["SB_GB"]):
-			cell = ctx.cells[cell_name]
-			if drivesPins(cell, "SR"): #SR might not be the right keyword here.
-				print("this is a reset signal")
-			if drivesPins(cell, "CEN"):
-				# print("this is a enable signal")
-				partition = self.CellNames2Partitions[cell_name]
-				self.biases[partition, :constrain2odd.shape[0]] = constrain2odd
-
-		#prevent carry chains that are longer than 1 tile from being placed at the top of the grid
-		constrain2lowerY = numpy.zeros([len(self.BelTypes['CC'])])
-		ymax = 0
-		for i, bel in enumerate(self.BelTypes['CC']):
-			loc = ctx.getBelLocation(bel)
-			if loc.y > ymax:
-				ymax = loc.y
-		for i, bel in enumerate(self.BelTypes['CC']):
-			loc = ctx.getBelLocation(bel)
-			if loc.y == ymax:
-				constrain2lowerY[i] = 1e6
-		for i, cell_name in enumerate(self.CellTypes["CC"]):
-			if len(self.chains[cell_name]) > 1:
-				partition = self.CellNames2Partitions[cell_name]
-				self.biases[partition, :constrain2lowerY.shape[0]] = constrain2lowerY
-
+				print("constraining", cell.name, bel)
+				bel_position = self.BelTypes[cell.type].index(bel)
+				self.PinSpin(cell.name, [bel_position])
 
 			# print("")
 			# for thing in dir(cell):
@@ -307,176 +438,124 @@ class Ice40Placer(BaseTask.BaseTask):
 
 		# exit()
 
-		
-		# ============================================================================= kernel map construction
-		narchist = numpy.zeros([25])
-		maxnarc = 1
-		for u, v, data in G.edges(data=True):
-			if "ArcsAfter" in data and "ArcsBefore" in data:
-				narcs = data["ArcsAfter"]+data["ArcsBefore"]+1
-				narchist[narcs] = narchist[narcs] + 1
-				if narcs > maxnarc:
-					maxnarc = narcs
-		# print(narchist)
-		print("max number arcs between dffs:", maxnarc)
+		#total_weight_strength keeps track of optimization weights,
+		#so legalization constraints can be scaled appropriately on a per-cell basis
+		total_weight_strength = defaultdict(lambda: 1) 
+		maxnarc = numpy.max([v for k, v in arc_timing_info.items()])
+		for arc in arc_timing_info:
+			arc_weights = w_wirelen + w_timing*(arc_timing_info[arc]/maxnarc)**3
+			type1 = ctx.cells[arc[0]].type
+			type2 = ctx.cells[arc[1]].type
+			kernel = lambda n: self.TimingKernel(ctx, type1, type2, n)
+			self.AddWeight(kernel, arc[0], arc[1], weight=arc_weights)
+			total_weight_strength[arc[0]] = total_weight_strength[arc[0]] + arc_weights
+			total_weight_strength[arc[1]] = total_weight_strength[arc[1]] + arc_weights
 
-
-		total_weight_strength = numpy.zeros([nPartitions])
-		for i, cell1_name in enumerate(self.Partitions2CellNames):
-			for j, cell2_name in enumerate(self.Partitions2CellNames):
-				if G.has_edge(cell1_name, cell2_name):
-					data = G[cell1_name][cell2_name]
-					nEndpoints = data["w"]
-					total_weight_strength[i] = total_weight_strength[i] + w_wirelen/nEndpoints
-					d2u = data["d2u"]
-					if "ArcsAfter" in data and "ArcsBefore" in data:
-						narcs = data["ArcsAfter"]+data["ArcsBefore"]+1
-						total_weight_strength[i] = total_weight_strength[i] + w_timing*2**(narcs-maxnarc)
-						total_weight_strength[i] = total_weight_strength[i] + w_jogs
-
-		# print(total_weight_strength)
 
 		lc_check_types = ["LC%i"%i for i in range(8)] + ["CC", "ICESTORM_LC"]
 
 		#set up ntiles variables, which tells if a cell occupies 1 or more than 1 logic tiles (if it is a carry chain)
-		ntiles = numpy.ones([nPartitions])
-		for i, cell_name in enumerate(self.Partitions2CellNames):
-			type1 = self.GetCellType[cell_name]
-			if type1 == "CC":
-				ntiles[i] = math.ceil(len(self.chains[cell_name])/8)
+		ntiles = {}
+		for key, cell in ctx.cells:
+			if cell.type == "CC":
+				ntiles[cell.name] = math.ceil(self.cc_lookup[cell.name]/8)
+			else:
+				ntiles[cell.name] = 1
 
-		self.InitKernelManager() #sets up for a host of BaseTask functions used for kernel management
+		for key1, cell1 in ctx.cells:
+			if cell1.type == "CCchild":
+				continue #these are not explicitly included in the optimization
+			for key2, cell2 in ctx.cells:
+				if cell2.type == "CCchild":
+					continue #these are not explicitly included in the optimization
+				if cell1.name == cell2.name:
+					continue
 
-		for i, cell1_name in enumerate(self.Partitions2CellNames):
-			for j, cell2_name in enumerate(self.Partitions2CellNames):
+				#there are two types of hard constraints, bel exclusion and tile exclusion.
+				#Bel exclusion means that two cells have the same type, and therefore cannot
+				#be in the same place.  Simple.
+				#Tile exclusion means that two cells cannot even be in the same tile,
+				#due to various factors.  A carry chain in one tile might even exclude
+				#other cells in the tile above it, if the chain is longer than 8.
 
-				type1 = self.GetCellType[cell1_name]
-				type2 = self.GetCellType[cell2_name]
-				cell1 = ctx.cells[cell1_name]
-				cell2 = ctx.cells[cell2_name]
-
-				#two logic cells with different D flip flop configurations cannot share the same logic tile
+				
 				tile_exclude = False
 				
-				if type1 in lc_check_types and type2 in lc_check_types:
+				#two logic cells with different D flip flop configurations cannot share the same logic tile
+				if cell1.type in lc_check_types and cell2.type in lc_check_types:
 					tile_exclude = DffIncompatible(cell1, cell2)
+					# print(tile_exclude)
 
 				#if a cell is a carry chain, it may span across more than one tile,
 				#in which case we should have a multi-tile exclusion.
 				#we must also account for when two multi-length carry chains exclude each other.
-				ntiles1 = ntiles[i]
-				ntiles2 = ntiles[j]
+				ntiles1 = ntiles[cell1.name]
+				ntiles2 = ntiles[cell2.name]
 
 				#create a structural penalty to prevent cells from sharing the same FPGA resources
 				#(applies to the mutual exclusion of carry chains and logic cells too)
-				if (type1 == "CC" and type2 in lc_check_types):
+				if (cell1.type == "CC" and cell2.type in lc_check_types):
 					tile_exclude = True
-				if (type2 == "CC" and type1 in lc_check_types):
+				if (cell2.type == "CC" and cell1.type in lc_check_types):
 					tile_exclude = True
 
-
-				#determine the wiring connectivity between the two cells,
-				connected = False
-				if G.has_edge(cell1_name, cell2_name):
-					connected = True #the heavy lifting and case handling has been done elsewhere, in the construction of G
-					data = G[cell1_name][cell2_name]
-					nEndpoints = data["w"]
-					d2u = data["d2u"]
-					if "ArcsAfter" in data and "ArcsBefore" in data:
-						narcs = data["ArcsAfter"]+data["ArcsBefore"]+1
-
-				#a geometric mean of how constrained each cell is determines how much constraint weight there should be
-				wgt = 1+total_weight_strength[i]*total_weight_strength[j]/(total_weight_strength[i] + total_weight_strength[j])
-
-				# =====================================================main if-else to decide which kernel, if any, relates each pair of cells
-				if i==j:
-					#the assigned position of one cell should not feed back upon itself
-					continue
-
-				if connected and d2u:
-					self.AddKernel(lambda n: self.NoJogsKernel(ctx, type1, type2, n), i, j, weight=w_jogs)
-					self.AddKernel(lambda n: self.TimingKernel(ctx, type1, type2, n), i, j, weight=w_timing*2**(narcs-maxnarc))
-
-				elif connected:
-					self.AddKernel(lambda n: self.WirelenKernel(ctx, type1, type2, n), i, j, weight=w_wirelen/nEndpoints)
+				#a geometric mean of each cell's optimization weights determines how much constraint weight there should be
+				wgt = total_weight_strength[cell1.name]*total_weight_strength[cell2.name]
+				wgt = wgt/(total_weight_strength[cell1.name] + total_weight_strength[cell2.name])
+				wgt = wgt*exclusion_factor
 
 				if tile_exclude:
-					self.AddKernel(lambda n: self.TileExclusion(ctx, type1, type2, ntiles1, ntiles2, n), i, j, weight=wgt)
+					self.AddKernel(lambda n: self.TileExclusion(ctx, cell1.type, cell2.type, ntiles1, ntiles2, n), cell1.name, cell2.name, weight=wgt)
 
-				elif type1 == type2:
-					self.AddKernel(lambda n: self.BelExclusion(n), i, j, weight=wgt)
+				elif cell1.type == cell2.type:
+					self.AddKernel(lambda n: self.BelExclusion(n), cell1.name, cell2.name, weight=wgt)
+
+		
+
+		#now loop through nets, to add net constraints.
+				#determine the wiring connectivity between the two cells,
+				# connected = False
+				# if G.has_edge(cell1_name, cell2_name):
+				# 	connected = True #the heavy lifting and case handling has been done elsewhere, in the construction of G
+				# 	data = G[cell1_name][cell2_name]
+				# 	nEndpoints = data["w"]
+				# 	d2u = data["d2u"]
+				# 	if "ArcsAfter" in data and "ArcsBefore" in data:
+				# 		narcs = data["ArcsAfter"]+data["ArcsBefore"]+1
+
+				# #a geometric mean of how constrained each cell is determines how much constraint weight there should be
+				# wgt = 1+total_weight_strength[i]*total_weight_strength[j]/(total_weight_strength[i] + total_weight_strength[j])
+
+				# # =====================================================main if-else to decide which kernel, if any, relates each pair of cells
+				# if i==j:
+				# 	#the assigned position of one cell should not feed back upon itself
+				# 	continue
+
+				# if connected and d2u:
+				# 	self.AddKernel(lambda n: self.NoJogsKernel(ctx, type1, type2, n), i, j, weight=w_jogs)
+				# 	self.AddKernel(lambda n: self.TimingKernel(ctx, type1, type2, n), i, j, weight=w_timing*2**(narcs-maxnarc))
+
+				# elif connected:
+				# 	self.AddKernel(lambda n: self.WirelenKernel(ctx, type1, type2, n), i, j, weight=w_wirelen/nEndpoints)
 
 
-		self.CompileKernels() #a baseTask function
+		self.CompileKernels()
 
-	def SplitCellsBySlot(self, ctx):
-		random_coloring = False
-		colors = []
-		if random_coloring:
-			for i, cell_name in enumerate(self.CellTypes['ICESTORM_LC']):
-				#if a LUT has been constrained, we need to respect that when assigning it to its index:
-				cell = ctx.cells[cell_name]
-				if "BEL" in cell.attrs:
-					bel = cell.attrs["BEL"]
-					loc = ctx.getBelLocation(bel)
-					colors.append(loc.z)
-					# new_cell_type = "LC%i"%loc.z
-				else:
-					colors.append(i%8)
-					# new_cell_type = "LC%i"%(i%8)
-		else:
-			#use graph coloring to assign each cell to a z index.
-			#cells that are connected should have different colors, so that they have a chance to live in the same tile.
-			#build NX graph of the free logic cells only, for coloring.
-			GcG = nx.Graph()
-			GcG.add_nodes_from(self.CellTypes["ICESTORM_LC"])
-			for key, net in ctx.nets:
-				if (net.driver.cell is None or net.driver.cell.type != "ICESTORM_LC" or net.driver.cell.name not in self.CellTypes["ICESTORM_LC"]):
-					#net from a global buffer to cells should not contribute in the distance matrix, since a GB distributes a signal evenly
-					continue;
-				lc_users = []
-				for dest in net.users:
-					if dest.cell.name in self.CellTypes["ICESTORM_LC"]:
-						lc_users.append(dest)
-				for dest in lc_users:
-					GcG.add_edge(net.driver.cell.name, dest.cell.name)
-					#also add edges between the destinations, since destinations that are closer together can use some of the same wire routing:
-					for dest2 in lc_users:
-						GcG.add_edge(dest2.cell.name, dest.cell.name)
 
-			#now this is fun.  We get to use the graph coloring task to solve this little problem so that we can solve the placement task better
-			GcTask = GraphColoring(8, G=GcG)
-			# GcTask.defaultPwlSchedule()
-			GcTask.e_th = 0
-			results = PottsPlayground.Anneal(GcTask, GcTask.defaultTemp(niters=10*GcTask.nnodes), OptsPerThrd=100, TakeAllOptions=False, backend="PottsPrecompute", substrate="CPU", nReplicates=1, nWorkers=1, nReports=10)
-			colors = results['MinStates'][-1,:]
-			#reset the list in self.CellTypes to reflect the ordering that the graph coloring task used:
-			print(len(self.CellTypes["ICESTORM_LC"]))
-			self.CellTypes["ICESTORM_LC"] = GcTask.Partitions2Nodes
-			print(len(self.CellTypes["ICESTORM_LC"]))
-			print("First-stage graph coloring completed, with %i conflicting edges remaining"%results["MinEnergies"][-1])
-			# print("Exiting on purpose.")
-			# exit()
+	def RevertContext(self, ctx):
+		"""
+		Since the task makes some 
+		revert altered types, needs to be called after all placer task is finished and results have been set
+		"""
+		for key, cell in ctx.cells:
+			if cell.type.startswith("CC") or cell.type.startswith("LC"):
+				# cell.setAttr("type", "ICESTORM_LC")
+				cell.type = "ICESTORM_LC"
+			# print(cell.type)
 
-		for i in range(8):
-			self.CellTypes["LC%i"%i] = []
+	
 
-		for color, cell_name in zip(colors, self.CellTypes["ICESTORM_LC"]):
-			self.CellTypes["LC%i"%color].append(cell_name)
-			self.GetCellType[cell_name] = "LC%i"%color
-
-		self.CellTypes["ICESTORM_LC"] = [] #all logic cells have been split into subtypes, so it should be an empty list
-
-	def SplitBelsBySlot(self, ctx):
-		#create new BelType lists depending on which of the 8 LCs in each tile each bel is.
-		for i in range(8):
-			self.BelTypes["LC%i"%i] = []
-		for i, bel in enumerate(self.BelTypes['ICESTORM_LC']):
-			loc = ctx.getBelLocation(bel)
-			self.BelTypes["LC%i"%(loc.z)].append(bel)
-			self.GetBelType[bel] = "LC%i"%loc.z
-
-	def SetResultInContext(self, ctx, state):
+	def SetResultInContext(self, ctx, state, verbose=False):
 		"""
 		Takes the final state of an annealing run and configures that result into the nextpnr context.
 		The context is not returned but afterwards should contain added constraints corresponding to the given state.
@@ -488,44 +567,36 @@ class Ice40Placer(BaseTask.BaseTask):
 		:rtype: int
 		"""
 		nConflicts = 0
-		for i, q in enumerate(state):
-			# if i > 5:
-				# return
-			cell_name = self.Partitions2CellNames[i]
-			cell = ctx.cells[cell_name]
+		used_bels = {}
+		for key, cell in ctx.cells:
+			if cell.type == "SB_IO":
+				continue #if IO is unconstrained, I can't tell if the pin exists or not from python
+
 			if "BEL" in cell.attrs:
-				#this cell was previously constrained, so we don't set it:
-				continue
-			cell_type = self.GetCellType[cell_name]
-			if cell_type == "CC":
-				chain = [ctx.cells[cn] for cn in self.chains[cell_name]]
-				root_bel = self.BelTypes['LC0'][q]
-				print("constraining length", len(chain), "carry chain with cell", cell_name,  "rooted at bel", root_bel)
-				for j, cell in enumerate(chain):
-					LCtype = "LC%i"%(j%8)
-					bel = self.BelTypes[LCtype][q+int(j/8)]#move to the next tile for each 8 logic cells
-					if bel not in self.used_bels:
-						cell.setAttr("BEL", bel)
-						# ctx.bindBel(bel, cell, STRENGTH_STRONG)
-						self.used_bels.append(bel)
-					else:
-						print("Error, cell %s cannot be assigned to bel %s which is already assigned"%(cell_name, bel))
-						nConflicts = nConflicts + 1
-			else: #all other things that are not carry chains
-				bel = self.BelTypes[cell_type][q]
-				# print(cell.name, bel)
-				# if (ctx.checkBelAvail(bel)):
-				if bel not in self.used_bels:
-					# ctx.bindBel(bel, cell, strength)
-					cell.setAttr("BEL", bel)
-					# ctx.bindBel(bel, cell, STRENGTH_STRONG)
-					self.used_bels.append(bel)
-					# cell.attrs["BEL"] = bel
-				else:
-					print("Error, cell %s cannot be assigned to bel %s which is already assigned"%(cell_name, bel))
-					nConflicts = nConflicts + 1
+				used_bels[cell.bel] = cell
+				continue #this cell was previously constrained, so we don't set it
+
+			if cell.type == "CCchild":
+				root_cell, i = self.cc_lookup[cell.name]
+				root_bel_indx = self.GetSpinFromState(root_cell.name, state)
+				LCtype = "LC%i"%(i%8)
+				bel = self.BelTypes[LCtype][root_bel_indx+int(i/8)]#move to the next tile for each 8 logic cells
+
+			else:
+				bel_indx = self.GetSpinFromState(cell.name, state)
+				bel = self.BelTypes[cell.type][bel_indx]
+
+			if bel not in used_bels:
+				cell.setAttr("BEL", bel)
+				used_bels[bel] = cell
+				if verbose:
+					print("cell %s <=> bel %s"%(cell.name, bel))
+			else:
+				print("ERROR: BEL assignment conflict.  cell %s (type: %s) cannot use bel %s becuase it is already assigned to cell %s (type: %s)"%(cell.name, cell.type, bel, used_bels[bel].name, used_bels[bel].type))
+				nConflicts = nConflicts + 1
 
 		return nConflicts
+
 
 	# =============================================================================================== kernel generators
 	# =================================================================================================================
@@ -589,7 +660,7 @@ class Ice40Placer(BaseTask.BaseTask):
 		dx = numpy.abs(locs1[:,:,0]-locs2[:,:,0])
 		dy = numpy.abs(locs1[:,:,1]-locs2[:,:,1])
 
-		local_conn = (dx <= 1)*(dy<=1)*0.6
+		local_conn = (dx <= 1)*(dy<=1)*0.6 #not actually added into the kernel
 		dx_conn = (dx > 1)*(dy == 0) * (dx + 5)
 		dy_conn = (dy > 1)*(dx == 0) * (dy + 5)
 		distant_conn = (local_conn == 0)*(dx_conn == 0)*(dy_conn == 0)*3*(3+dx+dy)
@@ -641,14 +712,14 @@ class Ice40Placer(BaseTask.BaseTask):
 		loc1x = locs1[:,:,0]
 		loc2y = locs2[:,:,1]
 		loc2x = locs2[:,:,0]
-		return self.exclusion_factor*(loc1y-ntiles1 < loc2y)*(loc2y < loc1y+ntiles2)*(loc1x == loc2x)
+		return (loc1y-ntiles1 < loc2y)*(loc2y < loc1y+ntiles2)*(loc1x == loc2x)
 
 	def BelExclusion(self, n=False):
 		if n:
 			return "BelExclusion"
 
-		qMax = numpy.max(self.qSizes)
-		return numpy.eye(qMax) * self.exclusion_factor
+		qMax = numpy.max([len(self.BelTypes[bels]) for bels in self.BelTypes])
+		return numpy.eye(qMax)
 
 
 	def examine_path(self, path_cell_names):
@@ -661,6 +732,16 @@ class Ice40Placer(BaseTask.BaseTask):
 
 
 if __name__ == '__main__':
+	#alternate version that makes direct edits to the ctx instead of creating a parallel accounting structure:
+	for key, cell in ctx.cells:
+		if GetCellPortNetName(cell, 'COUT') is not None and GetCellPortNetName(cell, 'CIN') is None:
+			#then this is the start of a chain!
+			chain = RecurseDownCarryChain(ctx, cell)
+			[chain_cell.setAttr("type", "CC") for chain_cell in chain] #re-type cells to indicate they are in a carry chain
+			ctx.setAttr("type", "CCroot") #re-type root cells
+
+	exit()
+
 	placer = Ice40Placer(ctx, cost_balancing=(15, 0.5, 1, 0.1))
 	tstart = time.perf_counter()
 	results = Annealing.Anneal(vars(placer), placer.defaultTemp(niters=5e6, tmax=12), OptsPerThrd=1, TakeAllOptions=True, backend="PottsJit", substrate="CPU", nReplicates=1, nWorkers=1, nReports=1)

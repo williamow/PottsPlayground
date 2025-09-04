@@ -17,51 +17,94 @@ class BaseTask:
 	but can also be used alone to create arbitrary Potts model tasks.
 	"""
 
+	def __init__(self):
+		self.InitKernelManager()
+
 	def SetPartitions(self, qSizes):
+		#DEPRECIATED interface for specifying the number and size of spins.
+		self.AddSpins(qSizes)
+
+	def AddSpins(self, qSizes, names=None, semantics=None):
 		"""
-		First step in creating a Potts model. The qSizes vector describes the structure of the Potts Model state, including how many spins there are and
-		how many states each spin may take.  The spins do not need to all have the same number of states.
+		Add Spins to the model by specifying their size (how many states each spin has).
+		Spins may be assigned semantic names, otherwise the spins are given an index identifier.
 
-		:param qSizes: The number of possibilities for each magnetization state of the Potts model.
-   		:type qSizes: 1-D Numpy array of ints or list[int]
-   		:return: None
+		:param qSizes: A list or numpy array of integers, one for each spin being added.
+		:param names: (optional) A mixed list of str or int, by which each of the spins is identified.  Must have the same number of elements as qSizes.
+		:param semantics: (optional) List of lists of string names for each spin value.  Does not affect the Potts model, but can be useful with DispalyModel. Outer list must have same number of elements as qSizes, inner lists must have lengths equal to each qSize.
+		:return: None
 		"""
-		if type(qSizes) == list:
-			self.nnodes = len(qSizes)
-		else:
-			self.nnodes = qSizes.shape[0]
-		self.qSizes = numpy.zeros([self.nnodes], dtype='int32')
-		numpy.copyto(self.qSizes, qSizes, casting='unsafe')
-		self.qCumulative = numpy.cumsum(self.qSizes, dtype="int32")
-		self.Partitions = numpy.zeros([int(self.qCumulative[-1])], dtype="int32")
-		self.Partition_states = numpy.zeros([int(self.qCumulative[-1])], dtype="int32")
-		for i in range(self.nnodes):
-			self.Partitions[int(self.qCumulative[i]-qSizes[i]):int(self.qCumulative[i])] = i
-			self.Partition_states[int(self.qCumulative[i]-qSizes[i]):int(self.qCumulative[i])] = numpy.linspace(0,qSizes[i]-1,int(qSizes[i]))
+		qSizes = numpy.array(qSizes, dtype='int32')
+		if names is None:
+			names = [i for i in range(qSizes.shape[0])]
 
-		self.biases = numpy.zeros([self.nnodes, numpy.max(self.qSizes)], dtype="float32")
+		for name, q in zip(names, qSizes):
+			self.graph.add_node(name, q=q, bias=numpy.zeros([q]))
 
-		self.e_th = -1e9
+		if semantics is not None:
+			for name, spin_names in zip(names, semantics):
+				self.graph.nodes[name]['semantics'] = spin_names
+
+	def AddBias(self, spin, bias):
+		"""
+		Modify the bias vector on the given spin, by adding to it's existing value.
+		Allows taking a "superpositional" approach to building up the model.
+
+		:param spin: Name or index of the spin to add to.
+		:param bias: Numpy array of bias values (one bias for each of the spin's possible states).
+		:return: None
+		"""
+		self.graph.nodes[spin]["bias"] = self.graph.nodes[spin]["bias"] + numpy.array(bias)
+
+	def PinSpin(self, spin, values, weight=100):
+		"""
+		Restrict a spin to a subset of its possible states.
+
+		For example,
+		model.PinSpin("A", [2,3])
+		will force spin "A" to be in state 2 or 3.
+
+		:param spin: Name or index of the spin to add to.
+		:param values: Spin indexes to keep.  All others will be excluded.
+		:type values: list(int)
+		:param weight: optional, the magntude of the bias used to pin the spin.
+		:return: None
+		"""
+
+		self.graph.nodes[spin]["bias"] = self.graph.nodes[spin]["bias"]*0 + weight
+		for value in values:
+			self.graph.nodes[spin]["bias"][value] = 0
+
+	def SetBias(self, spin, bias):
+		"""
+		Modify the bias vector on the given spin, by setting it to a new value.
+
+		:param spin: Name or index of the spin to add to.
+		:param bias: Numpy array of bias values (one bias for each of the spin's possible states).
+		:return: None
+		"""
+		self.graph.nodes[spin]["bias"] = bias
 
 	def InitKernelManager(self):
 		"""
-		Initializes the kernel manager system, which is used for building up weight matrices piece by piece,
-		by initializing a few empty variables.  SetPartitions(...) must be called beforehand.
+		(Re)Initializes the kernel manager system, which is used for building up weight matrices piece by piece,
+		by initializing a few empty variables.
 
 		:return: None
 		"""
 		self.KernelList = []
 		self.KernelDict = {}
 		self.graph = networkx.MultiDiGraph()
+		self.Names2Indices = {}
+		self.Indices2Names = []
 		#directed graph, so that the kernel in each direction can be different (usually just a transpose.)
 		#MultiGraph, so that multiple kernels can be applied to the same edge.
-		#fill the graph with all nodes here in advance:
-		for i in range(self.nnodes):
-			self.graph.add_node(i)
+		
+		self.e_th = -1e9
 
 	def AddKernel(self, creator, i, j, weight=1):
 		"""
-		Adds a connection between spin i and spin j.  The connection is a weight matrix unto itself,
+		Adds a directed connection from spin i to spin j.  The connection is a weight matrix unto itself,
 		with size [qSizes[i], qSizes[j]].  'creator' is a function that accepts a single boolean arguement;
 		when true, it returns a string identifier for the weight kernel between spins i and j.  If false, 
 		it returns the actual weight kernel.  This is designed to balance ease of use and efficiency:
@@ -70,10 +113,10 @@ class BaseTask:
 		to keep track of how many times a given weight kernel was used.
 
 		:param creator: A lambda function that takes a single boolean arguement.
-		:param i: Index of first spin.
-		:type i: int
-		:param j: Index of second spin.
-		:type j: int
+		:param i: Name/Index of first spin.
+		:type i: str, int
+		:param j: Name/Index of second spin.
+		:type j: str, int
 		:param weight: Scales the entire weight kernel for this connection only.
 		:type weight: float
 		:return: None
@@ -91,10 +134,60 @@ class BaseTask:
 		#add the connection to the graph:
 		self.graph.add_edge(i, j, weight=weight, kIndex=kIndex)
 
-	def CompileKernels(self):
+	def AddWeight(self, creator, i, j, weight=1):
+		"""
+		Adds an undirected connection between spin i and spin j.  The connection is a weight matrix unto itself,
+		with size [qSizes[i], qSizes[j]].  This weight matrix is automatically transposed
+		to create the reverse j to i connection.  'creator' is a function that accepts a single boolean arguement;
+		when true, it returns a string identifier for the weight kernel between spins i and j.  If false, 
+		it returns the actual weight kernel.  This is designed to balance ease of use and efficiency:
+		if the same weight kernel is used between many pairs of Potts spins, the weight kernel will only be
+		generated once (which may not be trivial depending on how it is generated), but the user does not need
+		to keep track of how many times a given weight kernel was used.
+
+		:param creator: A lambda function that takes a single boolean arguement.
+		:param i: Name/Index of first spin.
+		:type i: str, int
+		:param j: Name/Index of second spin.
+		:type j: str, int
+		:param weight: Scales the entire weight kernel for this connection only.
+		:type weight: float
+		:return: None
+		"""
+
+		#first, see if kernel has already been created, and if not, create it:
+		if weight == 0:
+			return
+
+		kName = creator(True)
+		kNameT = kName + "_transposed"
+
+		if kName not in self.KernelDict:
+			self.KernelList.append(creator(False))
+			self.KernelDict[kName] = len(self.KernelList)-1
+		kIndex = self.KernelDict[kName]
+
+		#mange transposed kernels.
+		#there is always a separate named entry for the transposed kernel,
+		#but if the kernel is symetric, the name merely points to the same kernel as the non-transposed version.
+		if kNameT not in self.KernelDict:
+			k = self.KernelList[kIndex]
+			kt = numpy.transpose(k)
+			if k.shape != kt.shape or numpy.any(k != kt):
+				self.KernelList.append(kt)
+				self.KernelDict[kNameT] = len(self.KernelList)-1
+			else:
+				self.KernelDict[kNameT] = kIndex
+		kIndexT = self.KernelDict[kNameT]
+
+		#add the connection to the graph:
+		self.graph.add_edge(i, j, weight=weight, kIndex=kIndex)
+		self.graph.add_edge(j, i, weight=weight, kIndex=kIndexT)
+
+	def Compile(self):
 		"""
 		After all of the connections in a model have been added via AddKernel, the weight kernels are assembled into
-		Numpy arrays with specific formats, tailored for use in C++/CUDA sampling code. The results are stored in the Task object.
+		Numpy arrays with specific formats, tailored for use in the C++/CUDA sampling code. The results are stored in the Task object.
 
 		The weight kernels are stored in a dense format in a 3-D Numpy array.  The first dimension is the kernel index,
 		while the second and third dimensions correspond to the magnetization states of the connected spins.
@@ -104,6 +197,36 @@ class BaseTask:
 
 		:return: None
 		"""
+		self.CompileKernels() #Renamed from CompileKernels to just Compile, but didn't want to break existing code
+
+	def CompileKernels(self):
+		#create mapping from NetworkX graph representation to a list of node sizes.
+		#also creates a bidirectional lookup for converting between machine indices and NetworkX names.
+		#if the lookup already exists and no changes have been made, leave as-is
+		# (in case some weights were changed but the network remains the same).
+		self.nnodes = self.graph.number_of_nodes()
+		if self.nnodes != len(self.Indices2Names): #if they are the same, make no change to the mapping
+			self.Indices2Names = []
+			self.Names2Indices = {}
+			self.qSizes = numpy.zeros([self.nnodes], dtype='int32')
+			for i, node in enumerate(self.graph.nodes):
+				self.Indices2Names.append(node)
+				self.Names2Indices[node] = i
+				self.qSizes[i] = self.graph.nodes[node]['q']
+
+		#build bias matrix:
+		self.biases = numpy.zeros([self.nnodes, numpy.max(self.qSizes)], dtype="float32")
+		for i, name in enumerate(self.Indices2Names):
+			self.biases[i,:self.qSizes[i]] = self.graph.nodes[name]['bias']
+
+		#compile supplementary model metadata for backend use:
+		self.qCumulative = numpy.cumsum(self.qSizes, dtype="int32")
+		self.Partitions = numpy.zeros([int(self.qCumulative[-1])], dtype="int32")
+		self.Partition_states = numpy.zeros([int(self.qCumulative[-1])], dtype="int32")
+		for i in range(self.nnodes):
+		 	self.Partitions[int(self.qCumulative[i]-self.qSizes[i]):int(self.qCumulative[i])] = i
+		 	self.Partition_states[int(self.qCumulative[i]-self.qSizes[i]):int(self.qCumulative[i])] = numpy.linspace(0,self.qSizes[i]-1,int(self.qSizes[i]))
+
 
 		#dense kernels
 		maxQ = numpy.max(self.qSizes)
@@ -115,14 +238,14 @@ class BaseTask:
 		#sparse kmap:
 		nPartitions = self.qSizes.shape[0]
 		assert nPartitions == self.graph.number_of_nodes()
-		maxDensity = numpy.max([self.graph.out_degree(i) for i in range(nPartitions)])
+		maxDensity = numpy.max([self.graph.out_degree(name) for name in self.Names2Indices])
 		total_count = 0
-		kmap_sparse = numpy.zeros([nPartitions, maxDensity+1,3], dtype="float16")
-		for i in range(nPartitions): #this could break if there any completely unconnected nodes in the graph.
-			kmap_sparse[i,0,0] = self.graph.out_degree(i)+1 #+1, so that it directly tells the stop index, rather than the number of elements
-			for c, (u, v, edge_data) in enumerate(self.graph.out_edges(i, data=True)):
-				kmap_sparse[i,c+1,:] = [edge_data['kIndex'], edge_data['weight'], v]
-			total_count = total_count + len(self.graph.out_edges(i))
+		kmap_sparse = numpy.zeros([nPartitions, maxDensity+1,3], dtype="float32")
+		for i, name in enumerate(self.Indices2Names): #this could break if there any completely unconnected nodes in the graph.
+			kmap_sparse[i,0,0] = self.graph.out_degree(name)+1 #+1, so that it directly tells the stop index, rather than the number of elements
+			for c, (u, v, edge_data) in enumerate(self.graph.out_edges(name, data=True)):
+				kmap_sparse[i,c+1,:] = [edge_data['kIndex'], edge_data['weight'], self.Names2Indices[v]]
+			total_count = total_count + len(self.graph.out_edges(name))
 		self.sparse_kmap_density = (total_count/(nPartitions**2))
 		# print("Done making sparse kernel map, density = %.3f"%)
 
@@ -132,6 +255,52 @@ class BaseTask:
 		numpy.copyto(self.kernels, kernels)
 		self.kmap_sparse = numpy.zeros([nPartitions, maxDensity+1,3], dtype="float32")
 		numpy.copyto(self.kmap_sparse, kmap_sparse)
+
+	def ListSpins(self):
+		"""
+		Returns a list of spin names/identifiers currently in the model.
+		"""
+
+		return [node for node in self.graph.nodes]
+
+	def SpinSize(self, spin):
+		"""
+		Returns the number of states that the given spin can have.
+		"""
+
+		return self.graph.nodes[spin]['q']
+
+	def TotalWeight(self, spin_i, spin_j):
+		"""
+		Returns a numpy array of the weight values between spin i and spin j.
+		If there are multiple kernels, they will be added together.
+		"""
+
+		w = numpy.zeros([self.SpinSize(spin_i), self.SpinSize(spin_j)])
+		for key, edge_data in self.graph.get_edge_data(spin_i, spin_j, default={}).items():
+			w = w + edge_data['weight']*self.KernelList[edge_data['kIndex']]
+
+		return w
+
+	def GetSpinBias(self, spin):
+		"""
+		Returns a numpy vector of the biases acting on the spin.
+		"""
+
+		return self.graph.nodes[spin]["bias"]
+
+	def GetSpinFromState(self, spin, state):
+		"""
+		Given a spin identifier, extract that spin's value from a densely stored state.
+		"""
+		return state[self.Names2Indices[spin]]
+
+	def SetSpinInState(self, spin, state, value):
+		"""
+		Given a spin identifier, set that spin's value in a densely stored state.
+		"""
+
+		state[self.Names2Indices[spin]] = value 
 	
 	# ====================================================================================
 	#
@@ -140,10 +309,13 @@ class BaseTask:
 		Python-domain calculation of the energy of a state, based on compiled kernels and sparse kernel map.
 
 		:param state: Magnetization values for each of the spins in the model.
-		:type state: 1-D numpy array of ints.
+		:type state: 1-D numpy array of ints, or a dict where keys are spin names and values are the spin states.
 		:return: Energy/Cost of the model when in the given state.
 		:rtype: float
 		"""
+		if (type(state) == dict):
+			state = self.NamedState2IndexState(state)
+
 		cost = 0
 		for i,m in enumerate(state):
 			cost = cost + 2*self.biases[i,m]
@@ -154,6 +326,23 @@ class BaseTask:
 				n = int(state[j])
 				cost = cost + w*self.kernels[k,m,n]
 		return cost/2
+
+	def NamedState2IndexState(self, NamedState):
+		IndexedState = []
+		for name in self.Indices2Names:
+			IndexedState.append(NamedState[name])
+		return IndexedState
+
+	def IndexOf(self, spin):
+		"""
+		Converts from a Spin name used during model construction to 
+		the corresponding spin index used for computation.
+
+		:param spin: Spin name used during model construction.
+		:return: Spin index in a model state.
+		:rtype: int
+		"""
+		return self.Names2Indices[spin]
 
 	def EvalPE(self, state, i, m):
 		"""
@@ -225,25 +414,6 @@ class BaseTask:
 
 		return DDE
 
-	# def MakeWeights(self): 
-	# 	#actually I think this might not work any more.  Not only that, but I don't need to keep it
-	# 	#this function assumes that partition information is already set.
-	# 	dim = int(self.qCumulative[-1])
-	# 	nUnits = self.qSizes.shape[0]
-	# 	weights = numpy.zeros([dim, dim], dtype="float32")
-	# 	for i in range(nUnits):
-	# 		for kspec in self.kMapLists[i]:
-	# 			#start by getting dimensions and positions of the particular kernel:
-	# 			j = kspec[2]
-	# 			k = kspec[0]
-	# 			sz_x = int(self.qSizes[i])
-	# 			sz_y = int(self.qSizes[j])
-	# 			pos_x = int(self.qCumulative[i]-sz_x)
-	# 			pos_y = int(self.qCumulative[j]-sz_y)
-	# 			k = self.kernels[k, 0:sz_x, 0:sz_y]
-	# 			weights[pos_x:pos_x+sz_x, pos_y:pos_y+sz_y] = k*kspec[1]
-
-	# 	self.weights = weights
 
 	def EnergyBands(self):
 		"""
@@ -267,10 +437,18 @@ class BaseTask:
 				invalid_energies.append(self.EvalCost(perm))
 		return valid_energies, invalid_energies
 
-
+	def IsValidSemantics(self, state):
+		return True
+		
 	#creates a graphic of the weights and states of the model, with semantic annotations
 	qannotations = None
+	qannotations_topangle = 45
+	qannotations_leftangle = 0
 	sannotations = None
+	sannotations_topangle = 45
+	sannotations_leftangle = 0
+	lgnd = True
+	figsize = (6, 4)
 	sAnnotatePad = 15
 	cellgap=0.5
 	partspace = 1 #space from the partition units to the weight matrix
@@ -292,10 +470,13 @@ class BaseTask:
 		local_org_x = qc1 - qs1 + numpy.linspace(0, self.cellgap*(len(qs1)-1), len(qs1))
 		local_org_y = qc2 - qs2 + numpy.linspace(0, self.cellgap*(len(qs2)-1), len(qs2))
 
-		fig = plt.figure()
+		fig = plt.figure(figsize=self.figsize)
 		gs = fig.add_gridspec(1, 3)#, hspace=0., wspace=0.3)
-		ax1 = fig.add_subplot(gs[0, 0:2])
-		ax2 = fig.add_subplot(gs[0, 2])
+		if self.lgnd:
+			ax1 = fig.add_subplot(gs[0, 0:2])
+			ax2 = fig.add_subplot(gs[0, 2])
+		else:
+			ax1 = fig.add_subplot(gs[0, 0:3])
 
 		plt.sca(ax1)
 		ax1 = plt.gca()
@@ -306,12 +487,13 @@ class BaseTask:
 		#build the weight matrix:
 		weights = numpy.zeros([qc1[-1], qc2[-1]], dtype="float32")
 		for ii, i in enumerate(m1):
-			if not self.graph.has_node(i):# not in self.kMapLists:
-				continue
-			for u, v, edge_data in self.graph.out_edges(i, data=True):
+			i_spin = self.Indices2Names[i]
+			if not self.graph.has_node(i_spin):# not in self.kMapLists:
+				print("ERROR: model does not contain spin %s"%i_spin)
+			for u, j_spin, edge_data in self.graph.out_edges(i_spin, data=True):
 				
 				#start by getting dimensions and positions of the particular kernel:
-				j = v
+				j = self.Names2Indices[j_spin]
 				k = edge_data['kIndex']
 				if j not in m2:
 					continue
@@ -378,10 +560,12 @@ class BaseTask:
 				y_ofst = local_org_y[jj]
 				plt.imshow(img, extent=[x_ofst, x_ofst+sz_x, y_ofst+sz_y, y_ofst])
 
-		plt.colorbar(mappable=cmapWeights, ax=ax2, orientation='horizontal', label='weight strength', aspect=10)
-		plt.colorbar(mappable=cmapActiveWeights, ax=ax2, orientation='horizontal', label='active weight strength', aspect=10)
-		if 'PE' in flags or 'DE' in flags:
-			plt.colorbar(mappable=cmapEnergy, ax=ax2, orientation='horizontal', label='partial energy', aspect=10)
+
+		if self.lgnd:
+			plt.colorbar(mappable=cmapWeights, ax=ax2, orientation='horizontal', label='weight strength', aspect=10)
+			plt.colorbar(mappable=cmapActiveWeights, ax=ax2, orientation='horizontal', label='active weight strength', aspect=10)
+			if 'PE' in flags or 'DE' in flags:
+				plt.colorbar(mappable=cmapEnergy, ax=ax2, orientation='horizontal', label='partial energy', aspect=10)
 
 		#making the legend.  Oh my god why am I writing so much complicated code just for these stupid plots...
 		class HandlerEllipse(HandlerPatch):
@@ -394,12 +578,13 @@ class BaseTask:
 				p.set_transform(trans)
 				return [p]
 
-		state_option_artist = Ellipse((0, 0), 0.7, 0.7, fc='gray')
-		state_active_artist = Ellipse((0, 0), 0.7, 0.7, fc='salmon')
-		ax2.legend([state_option_artist, state_active_artist], ['Magnetization Option', 'Current Magnetization'], handler_map={Ellipse: HandlerEllipse()})
-		ax2.spines[['right', 'top', 'left', 'bottom']].set_visible(False)
-		ax2.set_xticks([])
-		ax2.set_yticks([])
+		if self.lgnd:
+			state_option_artist = Ellipse((0, 0), 0.7, 0.7, fc='gray')
+			state_active_artist = Ellipse((0, 0), 0.7, 0.7, fc='salmon')
+			ax2.legend([state_option_artist, state_active_artist], ['Magnetization Option', 'Current Magnetization'], handler_map={Ellipse: HandlerEllipse()})
+			ax2.spines[['right', 'top', 'left', 'bottom']].set_visible(False)
+			ax2.set_xticks([])
+			ax2.set_yticks([])
 
 		#========================================================================================================================
 		#start adding partition embelishments.
@@ -454,7 +639,7 @@ class BaseTask:
 							plt.arrow(-leftspace, flt_indx, leftspace, 0, length_includes_head=True, head_width=0.4, head_length=0.4, color='salmon')
 							plt.plot([0, 0, xmax-0.5, xmax-0.5, 0], [flt_indx-0.5, flt_indx+0.5, flt_indx+0.5, flt_indx-0.5, flt_indx-0.5], c='salmon')
 						else:
-							plt.plot([-leftspace, xmax], [flt_indx, flt_indx], c='salmon')
+							plt.plot([-leftspace, xmax], [flt_indx, flt_indx], c='salmon', linewidth=0.9, zorder=1)
 					else:
 						plt.gca().add_patch(Ellipse((-leftspace, flt_indx), 0.7, 0.7, fc='gray'))
 
@@ -473,13 +658,31 @@ class BaseTask:
 						if 'no-hl' in flags:
 							continue
 						if 'PE' not in flags:
-							plt.plot([flt_indx, flt_indx], [xmax, -topspace], c='salmon')
+							plt.plot([flt_indx, flt_indx], [xmax, -topspace], c='salmon', linewidth=0.9, zorder=1)
 					else:
 						plt.gca().add_patch(Ellipse((flt_indx, -topspace), 0.7, 0.7, fc='gray'))
 
+		#add outlined active weight rectangles on top:
+		for ii, i in enumerate(m1):
+			for jj, j in enumerate(m2):
+
+				if state is not None and 'no-hl' not in flags:
+					active_color = cmapActiveWeights.to_rgba(k[state[i], state[j]])
+
+					x_ofst = local_org_x[ii]+state[i]
+					y_ofst = local_org_y[jj]+state[j]
+
+					ax1.add_patch(plt.Rectangle((x_ofst, y_ofst), 1, 1, fc=active_color, fill=True, ec='salmon', lw=0.9, zorder=2))
 
 
-		if self.qannotations is not None:
+		if self.qannotations is None:
+			self.qannotations = []
+			#try getting annotations from graph structure semantics
+			for i in range(len(self.qSizes)):
+				named_node = self.Indices2Names[i]
+				self.qannotations.append(self.graph.nodes[named_node]['semantics'])
+
+		if type(self.qannotations) == list:
 			xlbls = []
 			xlblpos = []
 			for ii, i in enumerate(m1):
@@ -497,19 +700,53 @@ class BaseTask:
 					ylblpos.append(flt_indx)
 					ylbls.append(self.qannotations[i][q])
 			plt.yticks(ylblpos, ylbls)
+
+		elif state is not None:
+			#label just the q values of each state
+			xlbls = []
+			xlblpos = []
+			for ii, i in enumerate(m1):
+				q = state[i]
+				flt_indx = local_org_x[ii] + q + 0.5
+				xlblpos.append(flt_indx)
+				named_node = self.Indices2Names[i]
+				xlbls.append(self.sannotations[i] + " =\n" + self.graph.nodes[named_node]['semantics'][q])
+			plt.xticks(xlblpos, xlbls)
+
+			ylblpos = []
+			ylbls = []
+			for ii, i in enumerate(m2):
+				q = state[i]
+				flt_indx = local_org_y[ii] + q + 0.5
+				ylblpos.append(flt_indx)
+				named_node = self.Indices2Names[i]
+				ylbls.append(self.sannotations[i] + " =\n" + self.graph.nodes[named_node]['semantics'][q])
+			plt.yticks(ylblpos, ylbls)
+
 		else:
 			plt.xticks([])
 			plt.yticks([])
 
 		axx2 = ax1.secondary_xaxis('top')
 		axy2 = ax1.secondary_yaxis('left')
-		if self.sannotations is not None:
+		
+		#define sannotations from the graph:
+		if self.sannotations is None:
+			self.sannotations = []
+			for i in range(len(self.qSizes)):
+				named_node = self.Indices2Names[i]
+				self.sannotations.append(named_node)
+
+		# if self.sannotations is not None:
 			pos = [local_org_x[i] + 0.5*qs1[i] for i in range(len(qs1))]
 			ann = [self.sannotations[i] for i in m1]
 			axx2.set_xticks(pos, ann)
 			pos = [local_org_y[i] + 0.5*qs2[i] for i in range(len(qs2))]
 			ann = [self.sannotations[i] for i in m2]
 			axy2.set_yticks(pos, ann)
+		else:
+			axx2.set_xticks([])
+			axy2.set_yticks([])
 		
 
 		ax1.tick_params(top=True, labeltop=True, bottom=False, labelbottom=False)
@@ -525,8 +762,10 @@ class BaseTask:
 		
 		axx2.tick_params(axis='x', pad=self.sAnnotatePad, length=0)
 		axy2.tick_params(axis='y', pad=self.sAnnotatePad, length=0)
-		plt.setp(axx2.xaxis.get_majorticklabels(), rotation=45, ha="left", rotation_mode="anchor")
-		plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha="left", rotation_mode="anchor") 
+		plt.setp(axx2.xaxis.get_majorticklabels(), rotation=self.sannotations_topangle, ha="center", rotation_mode="anchor")
+		plt.setp(axy2.yaxis.get_majorticklabels(), rotation=self.sannotations_leftangle, ha="center", rotation_mode="anchor")
+		plt.setp(ax1.xaxis.get_majorticklabels(), rotation=self.qannotations_topangle, ha="left", rotation_mode="anchor")
+		# plt.setp(ax1.yaxis.get_majorticklabels(), rotation=self.qannotations_leftangle, ha="left", rotation_mode="anchor") 
 		# for ax in [axx2, axy2]:
 
 

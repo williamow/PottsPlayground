@@ -1,7 +1,7 @@
 #include "Annealables.h"
 
 //=====================================================================================constructor methods
-__h__ IsingAnnealable::IsingAnnealable(PyObject* task, bool USE_GPU){
+__h__ IsingPrecomputeAnnealable::IsingPrecomputeAnnealable(PyObject* task, int nReplicates, bool USE_GPU){
 	//accelerate ising-only computation by taking advantage of all the simplifications when q=2.
 	//operates on the same problem format as the Potts solvers,
 	//but assumes that there is a single kernel that meets requirements for Binary Quadratic Format,
@@ -18,11 +18,25 @@ __h__ IsingAnnealable::IsingAnnealable(PyObject* task, bool USE_GPU){
 	nNHPPs = qSizes.sum();
 	NumActions = nPartitions; //each action is now just flipping a state, so there is only 1 per partition
 
-	if (USE_GPU) dispatch = GpuIsingDispatch;
-    else         dispatch = CpuIsingDispatch;
+	NHPP_potentials = NumCuda<double>(nReplicates, NumActions);
+	UpdateIndices = NumCuda<int>(NumActions, kmap.dims[1]+1);
+
+	//pre-build update indices.  Mostly copying over from kmap
+	for (int i = 0; i < nPartitions; i++){
+		UpdateIndices(i, 0) = kmap(i,0,0);
+    	for (int c = 1; c < kmap(i,0,0); c++){
+    		UpdateIndices(i, c) = kmap(i,c,2);
+    	}
+    	UpdateIndices(i, kmap(i,0,0)) = i; //becuase self always changes too
+    }
+
+    // printf("Prebuilt update indices successfully\n");
+
+	if (USE_GPU) dispatch = GpuIsingPrecomputeDispatch;
+    else         dispatch = CpuIsingPrecomputeDispatch;
 }
 
-__h__ __d__ float IsingAnnealable::EnergyOfState(int* state){
+__h__ __d__ float IsingPrecomputeAnnealable::EnergyOfState(int* state){
 	float e = 0;
     for (int i = 0; i < nPartitions; i++){
     	e += 2*biases(i, state[i]);
@@ -35,50 +49,35 @@ __h__ __d__ float IsingAnnealable::EnergyOfState(int* state){
     return e/2;
 }
 
-__h__ __d__ void IsingAnnealable::BeginEpoch(int iter){
+__h__ __d__ void IsingPrecomputeAnnealable::BeginEpoch(int iter){
 
-	// if (iter==0){
-	// 	for (int partition = 0; partition < nPartitions; partition++){
-    //         MiWrk[partition] = partition%2; //a really shitty pseudorandom initialization
-    //         MiBest[partition] = MiWrk[partition];
-    //     }
-	// }
-	//intialize total energies to reflect the states that were just passed
 	current_e = EnergyOfState(MiWrk);
     lowest_e = EnergyOfState(MiBest);
+
+    //initialize NHPP potentials.
+    for (int i = 0; i < nPartitions; i++){
+    	NHPP_potentials(Rep, i) = biases(i, 1) - biases(i, 0);
+    	for (int c = 1; c < kmap(i,0,0); c++){
+    		int j = kmap(i,c,2); //index of the connected Potts node
+    		float w = kmap(i,c,1); //scalar multiplier.  For Ising, this is all we need to know about the coupling.
+    		NHPP_potentials(Rep, i) += w*MiWrk[j];
+    	}
+    }
 }
 
 
-__h__ __d__ void IsingAnnealable::FinishEpoch(){
-	// float eps = 1e-5;
-	// float e = EnergyOfState(MiWrk);
-	// if (current_e + eps < e || current_e - eps > e)
-		// printf("Working Energy tracking error: actual=%.5f, tracked=%.5f\n", e, current_e); 
-	
+__h__ __d__ void IsingPrecomputeAnnealable::FinishEpoch(){
+
 }
 
 // ===================================================================================annealing methods
 //how much the total energy will change if this action is taken
-__h__ __d__ float IsingAnnealable::GetActionDE(int action_num){
-	int action_partition = action_num;
-	int Mi_current = MiWrk[action_partition];
-	int Mi_proposed = 1 - Mi_current; //since action is defined as a flip
-
-	float dE = biases(action_partition, Mi_proposed) - biases(action_partition, Mi_current);
-    //compute how much the energy would change.
-    //assumes no weights between Mi_proposed and Mi_current, otherwise this calculation would be incorrect.
-
-	for (int c = 1; c < kmap(action_partition,0,0); c++){
-		int j = kmap(action_partition,c,2); //index of the connected Potts node
-		float w = kmap(action_partition,c,1); //scalar multiplier
-		dE += w*MiWrk[j]*(Mi_proposed-Mi_current);
-	}
-
-    return dE;
+__h__ __d__ float IsingPrecomputeAnnealable::GetActionDE(int action_num){
+	return (1-2*MiWrk[action_num])*NHPP_potentials(Rep, action_num);
 }
 
 //changes internal state to reflect the annealing step that was taken
-__h__ __d__ void IsingAnnealable::TakeAction_tic(int action_num){
+__h__ __d__ void IsingPrecomputeAnnealable::TakeAction_tic(int action_num){
 	Mi_proposed_holder = 1 - MiWrk[action_num];
 	//in order to ensure cooperative multi-threading correctness,
 	//The proposed flip is recorded here, so that all threads can record the correct target state
@@ -88,7 +87,7 @@ __h__ __d__ void IsingAnnealable::TakeAction_tic(int action_num){
     current_e += GetActionDE(action_num);
 }
 
-__h__ __d__ void IsingAnnealable::TakeAction_toc(int action_num){
+__h__ __d__ void IsingPrecomputeAnnealable::TakeAction_toc(int action_num){
 	if (action_num < 0) return;
 	
     MiWrk[action_num] = Mi_proposed_holder; //needs to happen after all the GetActionDE calls
@@ -97,4 +96,18 @@ __h__ __d__ void IsingAnnealable::TakeAction_toc(int action_num){
         lowest_e = current_e;
         for (int i = 0; i < nPartitions; i++) MiBest[i] = MiWrk[i];
     }
+
+	//update NHPP_potentials:
+	for (int c = 1; c < kmap(action_num,0,0); c++){
+		int j = kmap(action_num,c,2); //index of the connected Potts node
+		float w = kmap(action_num,c,1); //scalar multiplier.  For Ising, this is all we need to know about the coupling.
+		if (Mi_proposed_holder == 1)
+			NHPP_potentials(Rep, j) += w;
+		else
+			NHPP_potentials(Rep, j) -= w;
+	}
+
+	nRecentUpdates = UpdateIndices(action_num, 0); //first value holds the count
+	recentUpdates = &UpdateIndices(action_num, 1); //second value onwards are the connections
+
 }

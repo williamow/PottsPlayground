@@ -1,11 +1,13 @@
 //python includes:
+#define PY_SSIZE_T_CLEAN //why? not sure.
+#define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION //makes old API unavailable, and supresses API depreciation warning
 #include <Python.h>
+#include <numpy/ndarrayobject.h>
 
 //regular includes:
 #include <stdio.h>
 
 //my includes
-#define INIT_NUMPY_ARRAY_CPP //config for NumCuda.h
 #include "NumCuda.h"
 #include "PieceWiseLinear.h"
 #include "Annealables.h"
@@ -32,18 +34,19 @@ PyObject* Anneal(PyObject* self, PyObject* args, PyObject* kwargs) {
 
     //init from python inputs =======================================================================================================
 
+
     DispatchArgs DA; //container for passing lots of variables down to the core algorithm
     DA.nOptions = 1;
     DA.nActions = 1;
-    DA.ParallelUpdates = false;
     DA.algo = "Simple";
-    DA.pMode = "NHPP";
 
     PyObject* AnnealSchedule_np;
     PyObject* task;
 
     //these can be overridden by arguement
     PyObject* InitialCondition_np = NULL;
+    // int nOptions = 1;
+    // int nActions = 1;
     const char *model_str = "Potts";
     const char *device_str = "CPU";
     const char *InclRepts = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -52,9 +55,9 @@ PyObject* Anneal(PyObject* self, PyObject* args, PyObject* kwargs) {
     int nReports = -1;
 
     //parse input arguements, with python keyword capability:
-    const char *kwlist[] = {"task", "PwlTemp", "IC", "nOptions", "nActions", "ParallelUpdating", "model", "algo", "pMode", "device", "IncludedReports", "nReplicates", "nWorkers", "nReports", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OO|Oiipsssssiii", const_cast<char **>(kwlist), //this cast could cause an error, but does not seem to
-                                     &task, &AnnealSchedule_np, &InitialCondition_np, &DA.nOptions, &DA.nActions, &DA.ParallelUpdates, &model_str, &DA.algo, &DA.pMode, &device_str, &InclRepts, &nReplicates, &nWorkers, &nReports))
+    const char *kwlist[] = {"task", "PwlTemp", "IC", "nOptions", "nActions", "model", "algo", "device", "IncludedReports", "nReplicates", "nWorkers", "nReports", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OO|Oiissssiii", const_cast<char **>(kwlist), //this cast could cause an error, but does not seem to
+                                     &task, &AnnealSchedule_np, &InitialCondition_np, &DA.nOptions, &DA.nActions, &model_str, &DA.algo, &device_str, &InclRepts, &nReplicates, &nWorkers, &nReports))
         return NULL;
 
     bool USE_GPU = false;
@@ -122,8 +125,8 @@ PyObject* Anneal(PyObject* self, PyObject* args, PyObject* kwargs) {
     // if (strchr(InclRepts, 'K') != NULL) reportRealTimes = NumCuda<float>(nReports);
     NumCuda<int> reportRealFlips;
     if (strchr(InclRepts, 'L') != NULL) reportRealFlips = NumCuda<int>(nReports);
-    NumCuda<float> reportAllMinEnergies;
-    if (strchr(InclRepts, 'M') != NULL) reportAllMinEnergies = NumCuda<float>(nReports, nReplicates);
+    NumCuda<int> reportAllMinEnergies;
+    if (strchr(InclRepts, 'M') != NULL) reportAllMinEnergies = NumCuda<int>(nReports, nReplicates);
     //create an annealable object,
     //the flavor of which determines the "model" of how energy is determined from the state variables,
     //and what the permissible set of changes to the state are.
@@ -364,7 +367,7 @@ PyMODINIT_FUNC PyInit_Annealing(void){
     //Grrr! This imports some things, such as PyArray_SimpleNewFromData.  
     //Without this line, code will still compile, but will seg fault
     // Py_Initialize();
-    import_array(); // PyError if not successful
+    import_array(); 
 
     GPU_AVAIL = GetGpuAvailability(); //GetGpuAvailability depends on whether the project is Gpu or Cpu compiled
  

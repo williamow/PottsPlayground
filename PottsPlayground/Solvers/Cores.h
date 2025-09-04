@@ -1,9 +1,32 @@
+#ifndef CORES_INCLUDED
+#define CORES_INCLUDED
+
 #include "NumCuda.h"
+#include "PieceWiseLinear.h"
 
 //for use in the main annealing function:
 //defined here, but has two alternate definitions in GpuCore and GpuCoreAlt, for Gpu and non-Gpu builds respectively.
 bool GetGpuAvailability();
 
+struct DispatchArgs {
+	NumCuda<int> WrkStates;
+	NumCuda<int> BestStates;
+	NumCuda<float> WrkEnergies;
+	NumCuda<float> BestEnergies;
+	NumCuda<float> ActArb;
+	NumCuda<int> RealFlips;
+	PieceWiseLinear PwlTemp;
+	int nOptions;
+	int nActions;
+	int nWorkers;
+	long MinIter;
+	long MaxIter;
+	float e_th;
+	NumCuda<int> GlobalHalt;
+	const char *algo;
+	bool ParallelUpdates;
+	const char *pMode;
+};
 
 //little class for keeping track of which actions should be taken and which should be discarded.
 class ActionArbitrator{
@@ -55,3 +78,5 @@ __h__ __d__ inline void AddOption(int NewOption, float NewPriority){
 	}
 }
 };
+
+#endif //CORES_INCLUDED

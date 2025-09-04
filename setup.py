@@ -26,7 +26,7 @@ if shutil.which("nvcc") is not None:
             include_dirs=[numpy.get_include()],
             libraries=["cudart"],
 
-            # extra_compile_args={"cxx": ["-std=c++17"], "nvcc": ["-std=c++17"]},
+            extra_compile_args={"cxx": ["-std=c++11"], "nvcc": ["-std=c++11"]},
         )
 
 
@@ -42,7 +42,7 @@ else:
                 ],
             include_dirs=[numpy.get_include()],
 
-            # extra_compile_args=["-std=c++17", "/std:c++17"], #first one is for linuxland, second for stupid MSVC
+            extra_compile_args=["-std=c++11"]#, "/std:c++11"], #first one is for linuxland, second for stupid MSVC
         )
 
 setuptools.setup(
@@ -58,7 +58,8 @@ setuptools.setup(
                         #"blifparser>=0.0.0",
                         "minorminer>=0.0.0",
                         "dimod>=0.0.0",
-                        "dwave-system>=0.0.0"],
+                        "dwave-system>=0.0.0"
+                        ],
     ext_modules=[ext],
     cmdclass=build,
 )

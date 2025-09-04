@@ -18,7 +18,7 @@ There is also a BaseTask class that can be used to try out any Potts Model probl
 Features:
 
 * Structured construction of Potts Models
-* Conversion from Potts to Ising models
+* Automatic conversion from Potts to Ising models
 * Minor Embedding of Ising models
 * GPU accelerated annealing and sampling
 * Parallel replicates
